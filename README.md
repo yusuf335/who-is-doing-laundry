@@ -1,16 +1,17 @@
 # Who is doing laundry?
 
-A small, free, mobile-first web app for a shared house with one laundry area. Every
-housemate opens the same link, signs in, and sees at a glance:
+A mobile-first web app for a shared house with one laundry area. Every housemate opens
+the same link, signs in, and sees at a glance:
 
-1. **Right now**: whether each machine is free or in use, by whom, and a live countdown.
+1. **Right now**: whether each machine is available or in use, by whom, and a live
+   countdown.
 2. **Upcoming**: who has booked the machine and when.
 3. **The rules**: whose day it is and how strictly that applies, with the reminder (in
-   the default mode) that a free machine can be used by anyone.
+   the default mode) that an available machine can be used by anyone.
 4. **The last week**: who ran which machine, so laundry left in a drum can find its owner.
 
-Starting a cycle also schedules an email to yourself for the moment it finishes, and
-booking a washer offers the dryer for straight afterwards.
+It notifies you when your own laundry is done, and booking a washer offers the dryer for
+straight afterwards.
 
 Built with Next.js (App Router, TypeScript), shadcn/ui + Tailwind, Firebase Auth
 (Google sign-in only), Cloud Firestore real-time listeners and Resend for the one email
