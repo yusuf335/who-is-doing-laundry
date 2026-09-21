@@ -1,0 +1,250 @@
+rules_version = '2';
+
+// Everything hangs off one question: is the caller a member of this house?
+// A house's documents are readable only by its members; writes are narrowed further
+// so that members can only do what the UI lets them do, even with a hand-crafted request.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    function housePath(houseId) {
+      return /databases/$(database)/documents/houses/$(houseId);
+    }
+
+    function isMember(houseId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/houses/$(houseId)/members/$(uid()));
+    }
+
+    function isAdmin(houseId) {
+      return signedIn() && get(housePath(houseId)).data.adminUid == uid();
+    }
+
+    // Same as isAdmin but sees writes from the current batch, which is how the very
+    // first member/machines/invite code get created together with the house itself.
+    function isAdminAfter(houseId) {
+      return signedIn() && getAfter(housePath(houseId)).data.adminUid == uid();
+    }
+
+    function onlyChanges(keys) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
+    }
+
+    // Every list must carry a modest limit, so a member's SDK cannot be used to drain
+    // the free read quota by pulling whole collections in a loop.
+    function boundedList() {
+      return request.query.limit != null && request.query.limit <= 200;
+    }
+
+    // users/{uid}: a private pointer from a person to their house.
+    match /users/{userId} {
+      allow read, write: if signedIn() && userId == uid();
+    }
+
+    // inviteCodes/{code}: looked up by exact code only, never listed. Knowing the code
+    // is what lets a signed-in person discover a houseId and join.
+    match /inviteCodes/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && request.resource.data.houseId is string
+        && isAdminAfter(request.resource.data.houseId);
+      allow update: if signedIn()
+        && request.resource.data.houseId == resource.data.houseId
+        && isAdmin(resource.data.houseId);
+      allow delete: if isAdmin(resource.data.houseId);
+    }
+
+    match /houses/{houseId} {
+      // Houses are only ever fetched by id; there is no reason to list them.
+      allow get: if isMember(houseId);
+      allow list: if false;
+      allow create: if signedIn() && request.resource.data.adminUid == uid();
+      allow update: if isAdmin(houseId)
+        && request.resource.data.adminUid == resource.data.adminUid
+        && request.resource.data.groups is list
+        && request.resource.data.groups.size() > 0;
+      allow delete: if false;
+
+      // A house can ask the admin to vet newcomers. The request is written by the person
+      // who wants in; only the admin decides it.
+      match /joinRequests/{requestId} {
+        allow get: if signedIn() && (requestId == uid() || isAdmin(houseId));
+        allow list: if isAdmin(houseId) && boundedList();
+        allow create: if signedIn()
+          && requestId == uid()
+          && request.resource.data.status == 'pending'
+          && request.resource.data.displayName is string
+          && request.resource.data.group in get(housePath(houseId)).data.groups;
+        // The applicant may retry, the admin decides; neither can rewrite the other part.
+        allow update: if signedIn()
+          && (
+            (requestId == uid() && request.resource.data.status == 'pending')
+            || (isAdmin(houseId) && onlyChanges(['status', 'decidedAt']))
+          );
+        allow delete: if signedIn() && (requestId == uid() || isAdmin(houseId));
+      }
+
+      function approvalRequired() {
+        return get(housePath(houseId)).data.get('requireApproval', false) == true;
+      }
+
+      function approvedToJoin() {
+        return exists(/databases/$(database)/documents/houses/$(houseId)/joinRequests/$(uid()))
+          && get(/databases/$(database)/documents/houses/$(houseId)/joinRequests/$(uid())).data.status == 'approved';
+      }
+
+      match /members/{memberId} {
+        allow get: if isMember(houseId);
+        allow list: if isMember(houseId) && boundedList();
+
+        // People create their own member document. A houseId is only discoverable
+        // through the invite code, so knowing it is the proof of invitation.
+        allow create: if signedIn()
+          && memberId == uid()
+          && request.resource.data.displayName is string
+          && request.resource.data.group in getAfter(housePath(houseId)).data.groups
+          && (
+            request.resource.data.role == 'member'
+            || (request.resource.data.role == 'admin' && isAdminAfter(houseId))
+          )
+          // In a house that vets newcomers, the invite code alone is not enough.
+          && (
+            request.resource.data.role == 'admin'
+            || !approvalRequired()
+            || approvedToJoin()
+          );
+
+        // Nobody can promote themselves; the admin can regroup anyone. getAfter, because
+        // renaming a group moves its members in the same batch as the house update.
+        allow update: if (memberId == uid() || isAdmin(houseId))
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.group in getAfter(housePath(houseId)).data.groups;
+
+        // Members can leave and the admin can remove people, but the admin document
+        // itself is never deleted, so a house can't be left without an admin.
+        allow delete: if signedIn()
+          && resource.data.role != 'admin'
+          && (memberId == uid() || isAdmin(houseId));
+      }
+
+      match /machines/{machineId} {
+        allow get: if isMember(houseId);
+        allow list: if isMember(houseId) && boundedList();
+        allow create: if isAdminAfter(houseId);
+        allow delete: if isAdmin(houseId);
+        allow update: if isAdmin(houseId)
+          || (isMember(houseId) && (startingSession() || endingSession()));
+
+        // Claiming a free machine for yourself.
+        function startingSession() {
+          let session = request.resource.data.currentSession;
+          return resource.data.status == 'free'
+            && request.resource.data.status == 'in_use'
+            && session.uid == uid()
+            && session.sessionId is string
+            && session.startedAt is timestamp
+            && session.expectedEndAt is timestamp
+            && session.expectedEndAt > session.startedAt
+            // At most ten hours, matching the server-side cycle-length limit.
+            && session.expectedEndAt.toMillis() - session.startedAt.toMillis() <= 36000000
+            && onlyChanges(['status', 'currentSession']);
+        }
+
+        // Freeing a machine: the owner any time, anybody once the cycle has finished.
+        function endingSession() {
+          return resource.data.status == 'in_use'
+            && request.resource.data.status == 'free'
+            && request.resource.data.currentSession == null
+            && onlyChanges(['status', 'currentSession'])
+            && (
+              resource.data.currentSession.uid == uid()
+              || request.time >= resource.data.currentSession.expectedEndAt
+            );
+        }
+      }
+
+      // The laundry log. Kept for a week so left-behind washing can be claimed, then
+      // swept by any member (the dashboard prunes on load).
+      match /sessions/{sessionId} {
+        allow get: if isMember(houseId);
+        allow list: if isMember(houseId) && boundedList();
+        allow create: if isMember(houseId)
+          && request.resource.data.uid == uid()
+          && request.resource.data.machineId is string
+          && request.resource.data.startedAt is timestamp;
+        // Anyone in the house may close a cycle (that is the "I emptied it" button), and
+        // the server stamps the id of the scheduled reminder. Nothing else can be rewritten.
+        allow update: if isMember(houseId)
+          && onlyChanges(['endedAt', 'reminderId', 'notifiedAt']);
+        allow delete: if isMember(houseId) && (isAdmin(houseId) || staleSession());
+      }
+
+      function staleSession() {
+        return resource.data.startedAt is timestamp
+          && resource.data.startedAt <= request.time - duration.value(7, 'd');
+      }
+
+      // Push registrations. Every member can read them, because sending "your wash is
+      // done" means reading the owner's tokens from whoever's app noticed. A token only
+      // identifies a browser; it cannot be used to send anything without the server key.
+      match /devices/{deviceId} {
+        allow get: if isMember(houseId);
+        allow list: if isMember(houseId) && boundedList();
+        allow create, update: if isMember(houseId)
+          && request.resource.data.uid == uid()
+          && request.resource.data.token is string;
+        allow delete: if isMember(houseId) && resource.data.uid == uid();
+      }
+
+      match /bookings/{bookingId} {
+        allow get: if isMember(houseId);
+        allow list: if isMember(houseId) && boundedList();
+        allow create: if isMember(houseId)
+          && request.resource.data.uid == uid()
+          && request.resource.data.machineId is string
+          && request.resource.data.startAt is timestamp
+          && request.resource.data.endAt is timestamp
+          && request.resource.data.endAt > request.resource.data.startAt
+          // 15-minute grid, at most six hours, and not entirely in the past — the same
+          // limits the server applies, so a hand-crafted write cannot sidestep them.
+          && request.resource.data.startAt.toMillis() % 900000 == 0
+          && request.resource.data.endAt.toMillis() % 900000 == 0
+          && request.resource.data.endAt.toMillis() - request.resource.data.startAt.toMillis() <= 21600000
+          && request.resource.data.endAt > request.time;
+        // Edits go through cancel + rebook so the slot locks always match the booking.
+        allow update: if false;
+        // Owners and the admin cancel; anyone may sweep a booking whose time has passed,
+        // which is how the app keeps no record of past bookings.
+        allow delete: if isMember(houseId)
+          && (resource.data.uid == uid() || isAdmin(houseId) || expired());
+      }
+
+      function expired() {
+        return resource.data.endAt is timestamp && resource.data.endAt <= request.time;
+      }
+
+      // One document per 15-minute slot per machine. Because a slot can only ever be
+      // created, never overwritten, two overlapping bookings cannot both succeed.
+      match /slots/{slotId} {
+        allow get: if isMember(houseId);
+        allow list: if isMember(houseId) && boundedList();
+        allow create: if isMember(houseId)
+          && request.resource.data.uid == uid()
+          && request.resource.data.bookingId is string
+          && request.resource.data.machineId is string
+          && request.resource.data.endAt is timestamp;
+        allow update: if false;
+        allow delete: if isMember(houseId)
+          && (resource.data.uid == uid() || isAdmin(houseId) || expired());
+      }
+    }
+  }
+}
