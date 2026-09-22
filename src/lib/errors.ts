@@ -15,7 +15,9 @@ export function fail(message: string): never {
 const AUTH_MESSAGES: Record<string, string> = {
   "auth/popup-closed-by-user": "The Google sign-in window was closed.",
   "auth/cancelled-popup-request": "The Google sign-in window was closed.",
-  "auth/popup-blocked": "Your browser blocked the sign-in popup.",
+  // Kept for the rare case the redirect fallback also fails.
+  "auth/popup-blocked":
+    "Your browser blocked the sign-in window. Trying again should send you to Google directly.",
   "auth/network-request-failed": "No connection. Check your network and try again.",
   "auth/too-many-requests": "Too many attempts. Wait a moment and try again.",
   "auth/unauthorized-domain":

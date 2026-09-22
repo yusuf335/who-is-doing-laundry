@@ -1,8 +1,11 @@
 "use client";
 
+import { FirebaseError } from "firebase/app";
 import {
+  getRedirectResult,
   onIdTokenChanged,
   signInWithPopup,
+  signInWithRedirect,
   signOut as firebaseSignOut,
   type User,
 } from "firebase/auth";
@@ -25,6 +28,27 @@ function toAuthUser(user: User): AuthUser {
   return { uid: user.uid, email: user.email, displayName: user.displayName };
 }
 
+/**
+ * A popup is the nicer sign-in when it is allowed, but it is not always allowed: strict
+ * browser settings block it, and an installed app has no window to open one in. These are
+ * the ways that shows up, and each one means "hand the whole page to Google instead".
+ */
+const POPUP_UNAVAILABLE = new Set([
+  "auth/popup-blocked",
+  "auth/cancelled-popup-request",
+  "auth/operation-not-supported-in-this-environment",
+  "auth/web-storage-unsupported",
+]);
+
+/** An installed app cannot open a popup at all, so it never tries. */
+function runningAsInstalledApp(): boolean {
+  if (typeof window === "undefined") return false;
+  const iosStandalone = (navigator as Navigator & { standalone?: boolean }).standalone;
+  return (
+    window.matchMedia("(display-mode: standalone)").matches || iosStandalone === true
+  );
+}
+
 /** Writes the cookie the server reads, before any navigation that depends on it. */
 async function syncCookie(user: User | null): Promise<void> {
   if (user) writeSessionCookie(await user.getIdToken());
@@ -43,6 +67,15 @@ export function AuthProvider({
   // Nothing to wait for when the server already knows who this is, or when there is no
   // Firebase project to ask.
   const [loading, setLoading] = useState(isFirebaseConfigured && initialUser === null);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured) return;
+    // Completes a redirect sign-in. The user also arrives through onIdTokenChanged, so
+    // this is here to surface a failure that would otherwise look like nothing happened.
+    void getRedirectResult(auth).catch((error: unknown) => {
+      console.error("redirect sign-in", error);
+    });
+  }, []);
 
   useEffect(() => {
     if (!isFirebaseConfigured) return;
@@ -69,8 +102,22 @@ export function AuthProvider({
       user,
       loading,
       signInWithGoogle: async () => {
-        const credential = await signInWithPopup(auth, googleProvider);
-        await syncCookie(credential.user);
+        if (runningAsInstalledApp()) {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        }
+        try {
+          const credential = await signInWithPopup(auth, googleProvider);
+          await syncCookie(credential.user);
+        } catch (error) {
+          if (error instanceof FirebaseError && POPUP_UNAVAILABLE.has(error.code)) {
+            // The page navigates to Google and comes back signed in, where
+            // onIdTokenChanged below picks it up exactly as it would after a popup.
+            await signInWithRedirect(auth, googleProvider);
+            return;
+          }
+          throw error;
+        }
       },
       signOut: async () => {
         clearSessionCookie();
