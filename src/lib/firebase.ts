@@ -6,7 +6,14 @@ import {
   type AppCheck,
 } from "firebase/app-check";
 import { connectAuthEmulator, getAuth, GoogleAuthProvider } from "firebase/auth";
-import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
+import {
+  connectFirestoreEmulator,
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  type Firestore,
+} from "firebase/firestore";
 import {
   appCheckSiteKey,
   firebaseConfig,
@@ -30,21 +37,26 @@ const app =
 export const auth = getAuth(app);
 
 /**
- * Plain in-memory cache, deliberately.
+ * Firestore keeps what it has read in IndexedDB, so reopening the app or coming back
+ * tomorrow serves the machines, members and bookings from disk and asks the server only
+ * for what changed. It also means the last known state still renders with no connection.
  *
- * `persistentLocalCache` looks like an easy saving, but Firestore's IndexedDB cache is
- * keyed by project, not by signed-in user. On a browser where two Google accounts have
- * both been used, the second account inherits the first one's cached documents, including
- * negative entries for documents it was never allowed to read. The symptom is brutal to
- * diagnose: a house document that plainly exists is reported by the server listener as
- * not existing, and the app sits on its loading screen forever.
- *
- * Re-introducing persistence means clearing IndexedDB whenever the signed-in uid changes
- * (`terminate` then `clearIndexedDbPersistence`, then reload). Until that is in place,
- * correctness wins: reads are still bounded, listener-based rather than polled, and the
- * housekeeping sweep is throttled.
+ * That cache is shared by every account used on this browser, which is a real hazard:
+ * see `src/lib/local-cache.ts`, which throws it away whenever the signed-in user changes.
  */
-export const db = getFirestore(app);
+function createFirestore(): Firestore {
+  if (typeof window === "undefined") return getFirestore(app);
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    });
+  } catch {
+    // Already initialised (a hot reload, or a second import): reuse it as it is.
+    return getFirestore(app);
+  }
+}
+
+export const db = createFirestore();
 export const googleProvider = new GoogleAuthProvider();
 
 /**

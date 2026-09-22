@@ -7,8 +7,9 @@ import {
   type User,
 } from "firebase/auth";
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { auth, googleProvider, isFirebaseConfigured } from "@/lib/firebase";
+import { auth, db, googleProvider, isFirebaseConfigured } from "@/lib/firebase";
 import type { AuthUser } from "@/lib/firebase-config";
+import { isDifferentUser, rememberUser, resetLocalCache } from "@/lib/local-cache";
 import { clearSessionCookie, writeSessionCookie } from "@/lib/session-cookie";
 
 interface AuthValue {
@@ -48,6 +49,15 @@ export function AuthProvider({
     // Fires on sign-in, sign-out and every hourly token refresh, keeping the cookie fresh
     // for as long as a tab is open.
     return onIdTokenChanged(auth, (next) => {
+      // A different person on this browser inherits the last one's offline cache, which
+      // misreports documents they are entitled to read. Throw it away before anything
+      // subscribes to it; the page reloads, so there is no state to update here.
+      if (next && isDifferentUser(next.uid)) {
+        void resetLocalCache(db, next.uid);
+        return;
+      }
+      if (next) rememberUser(next.uid);
+
       void syncCookie(next);
       setUser(next ? toAuthUser(next) : null);
       setLoading(false);
