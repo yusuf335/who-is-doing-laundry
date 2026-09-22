@@ -10,7 +10,9 @@ import { disablePush, enablePush, pushConfigured, pushPermission } from "@/lib/p
 import { runAction } from "@/lib/run-action";
 import { registerDeviceAction, unregisterDeviceAction } from "@/server/actions";
 
-const subscribeToNothing = () => () => {};
+const subscribeToNothing = () => () => {
+  // Nothing to unsubscribe from: this store never changes after the first render.
+};
 
 /**
  * Turns notifications on for this browser. Kept next to the install banner because on

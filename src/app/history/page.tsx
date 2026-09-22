@@ -1,6 +1,7 @@
 "use client";
 
 import { IconHistory, IconUsers, IconWashMachine, IconWind } from "@tabler/icons-react";
+import { LoadError } from "@/components/load-error";
 import { RequireHouse } from "@/components/require-house";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -57,6 +58,8 @@ function History() {
               <Skeleton className="h-10 w-full" />
               <Skeleton className="h-10 w-full" />
             </div>
+          ) : sessions.error ? (
+            <LoadError what="the last week" />
           ) : sessions.data.length === 0 ? (
             <p className="text-muted-foreground flex items-center gap-2 py-2 text-sm">
               <IconHistory className="size-4" />

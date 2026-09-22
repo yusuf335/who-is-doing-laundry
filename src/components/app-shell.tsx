@@ -53,7 +53,9 @@ function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme();
   // The theme is unknown on the server, so render a neutral icon until hydrated.
   const mounted = useSyncExternalStore(
-    () => () => {},
+    () => () => {
+      // Nothing to unsubscribe from: this store never changes after the first render.
+    },
     () => true,
     () => false,
   );

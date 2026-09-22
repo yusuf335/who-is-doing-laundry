@@ -10,6 +10,7 @@ import {
 } from "@tabler/icons-react";
 import Link from "next/link";
 import { useEffect } from "react";
+import { LoadError } from "@/components/load-error";
 import { MachineCard } from "@/components/machine-card";
 import { useHouse } from "@/components/providers/house-provider";
 import { RequireHouse } from "@/components/require-house";
@@ -47,7 +48,11 @@ function Dashboard() {
     if (!houseId || bookings.loading) return;
     if (!shouldPrune(hasExpired)) return;
     markPruned();
-    void runAction(() => pruneOldRecordsAction({ houseId })).catch(() => {});
+    void runAction(() => pruneOldRecordsAction({ houseId })).catch((error: unknown) => {
+      // Housekeeping is best effort: it runs again on the next load, and a person
+      // waiting to start a wash should never be told about it.
+      console.error("prune", error);
+    });
   }, [houseId, bookings.loading, hasExpired]);
 
   return (
@@ -59,6 +64,12 @@ function Dashboard() {
           <MachineSkeleton />
           <MachineSkeleton />
         </>
+      ) : machines.error ? (
+        <Card size="sm">
+          <CardContent>
+            <LoadError what="the machines" />
+          </CardContent>
+        </Card>
       ) : machines.data.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-8 text-center">

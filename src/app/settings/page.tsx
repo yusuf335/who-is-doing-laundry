@@ -35,6 +35,7 @@ import {
 import { useState } from "react";
 import { toast } from "sonner";
 import { useHouse } from "@/components/providers/house-provider";
+import { LoadError } from "@/components/load-error";
 import { MyNotifications } from "@/components/my-notifications";
 import { RequireHouse } from "@/components/require-house";
 import { useRouter } from "next/navigation";
@@ -149,6 +150,7 @@ function Settings() {
         house={house}
         members={members.data}
         loading={members.loading}
+        failed={members.error !== null}
         canManage={isAdmin}
       />
 
@@ -1321,11 +1323,13 @@ function MembersCard({
   house,
   members,
   loading,
+  failed,
   canManage,
 }: {
   house: House;
   members: Member[];
   loading: boolean;
+  failed: boolean;
   canManage: boolean;
 }) {
   const [removing, setRemoving] = useState<Member | null>(null);
@@ -1369,6 +1373,8 @@ function MembersCard({
       <CardContent>
         {loading ? (
           <Skeleton className="h-10 w-full" />
+        ) : failed ? (
+          <LoadError what="your housemates" />
         ) : members.length === 0 ? (
           <p className="text-muted-foreground flex items-center gap-2 text-sm">
             <IconUsers className="size-4" />

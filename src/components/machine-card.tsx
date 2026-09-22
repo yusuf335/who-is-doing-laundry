@@ -96,7 +96,10 @@ export function MachineCard({
     if (state !== "finished" || !houseId || notified.current) return;
     notified.current = true;
     void runAction(() => notifyCycleFinishedAction({ houseId, machineId: machine.id }))
-      .catch(() => {})
+      .catch((error: unknown) => {
+        // Somebody else's phone will raise it instead; not worth interrupting anyone.
+        console.error("notify finished", error);
+      })
       .finally(() => {
         // Allow one more attempt for the next cycle on this machine.
         notified.current = state === "finished";

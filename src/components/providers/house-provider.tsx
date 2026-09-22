@@ -11,8 +11,12 @@ import type { House, Member } from "@/lib/types";
 
 export type HouseStatus = "loading" | "signed-out" | "no-house" | "ready";
 
+/** Which piece has not arrived, so a stuck loading screen can say something useful. */
+export type Waiting = "auth" | "pointer" | "membership" | "house" | null;
+
 interface HouseValue {
   status: HouseStatus;
+  waitingFor: Waiting;
   houseId: string | null;
   house: House | null;
   member: Member | null;
@@ -127,7 +131,10 @@ export function HouseProvider({
           // A real empty snapshot: the admin removed us. Drop the pointer so onboarding
           // takes over. The server checks again before it erases anything.
           patch({ member: null, memberChecked: true });
-          void runAction(() => clearHousePointerAction()).catch(() => {});
+          void runAction(() => clearHousePointerAction()).catch((error: unknown) => {
+            // The server refuses if we are in fact still a member, which is the point.
+            console.error("clear house pointer", error);
+          });
         }
       },
       // Never clear the pointer from an error. Losing it strands somebody outside a house
@@ -148,17 +155,27 @@ export function HouseProvider({
     const member = current?.member ?? null;
 
     let status: HouseStatus = "loading";
-    if (authLoading) status = "loading";
-    else if (!user) status = "signed-out";
-    else if (!pointerLoaded) status = "loading";
-    else if (!houseId) status = "no-house";
-    else if (!current?.memberChecked) status = "loading";
-    else if (!member) status = "no-house";
-    else if (!house) status = "loading";
-    else status = "ready";
+    let waitingFor: Waiting = null;
+    if (authLoading) {
+      status = "loading";
+      waitingFor = "auth";
+    } else if (!user) status = "signed-out";
+    else if (!pointerLoaded) {
+      status = "loading";
+      waitingFor = "pointer";
+    } else if (!houseId) status = "no-house";
+    else if (!current?.memberChecked) {
+      status = "loading";
+      waitingFor = "membership";
+    } else if (!member) status = "no-house";
+    else if (!house) {
+      status = "loading";
+      waitingFor = "house";
+    } else status = "ready";
 
     return {
       status,
+      waitingFor,
       houseId: status === "ready" ? houseId : null,
       house,
       member,

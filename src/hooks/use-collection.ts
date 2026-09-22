@@ -51,14 +51,18 @@ export function useCollection<T>(query: Query | null): CollectionState<T> {
           fromCache: snap.metadata.fromCache,
         });
       },
-      (error) =>
+      (error) => {
+        // A denied or failed query otherwise renders as "nothing here yet", which is a
+        // lie. Callers show `error`; this makes sure it is never only in the UI.
+        console.error("collection listener", error);
         setSnapshot({
           query,
           data: [],
           error,
           updatedAt: Date.now(),
           fromCache: false,
-        }),
+        });
+      },
     );
   }, [query]);
 

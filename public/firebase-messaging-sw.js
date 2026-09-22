@@ -54,7 +54,10 @@ self.addEventListener("notificationclick", (event) => {
       if (open) {
         // navigate() is not in every browser, so focus is the part that always happens.
         if (open.url !== target && "navigate" in open) {
-          await open.navigate(target).catch(() => {});
+          await open.navigate(target).catch((error) => {
+            // Some browsers refuse cross-document navigation here; focusing still works.
+            console.error("notification navigate", error);
+          });
         }
         return open.focus();
       }

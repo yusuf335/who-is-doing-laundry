@@ -504,7 +504,11 @@ export async function startSession(
     from: house.emailFrom,
   });
   if (reminderId) {
-    await updateDoc(sessionRef, { reminderId }).catch(() => {});
+    await updateDoc(sessionRef, { reminderId }).catch((error: unknown) => {
+      // Without the id the reminder cannot be called off early, which is a nuisance
+      // rather than a reason to fail a cycle that has already started.
+      console.error("store reminder id", error);
+    });
   }
 }
 
@@ -578,7 +582,10 @@ export async function unregisterDevice(
   await requireMember(ctx, input.houseId);
   await deleteDoc(
     deviceDoc(ctx.db, input.houseId, deviceIdFor(input.token.trim())),
-  ).catch(() => {});
+  ).catch((error: unknown) => {
+    // Already gone, or never registered. Either way there is nothing to remove.
+    console.error("unregister device", error);
+  });
 }
 
 /** Firestore ids cannot hold every character an FCM token can, so encode it. */
@@ -628,7 +635,12 @@ export async function notifyCycleFinished(
   });
 
   for (const token of stale) {
-    await deleteDoc(deviceDoc(ctx.db, input.houseId, deviceIdFor(token))).catch(() => {});
+    await deleteDoc(deviceDoc(ctx.db, input.houseId, deviceIdFor(token))).catch(
+      (error: unknown) => {
+        // A token we could not delete simply fails again next time, harmlessly.
+        console.error("drop stale device", error);
+      },
+    );
   }
   return { sent };
 }

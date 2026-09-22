@@ -62,7 +62,10 @@ export async function withServerUser<T>(
       user: { uid: current.uid, email: current.email, displayName: current.displayName },
     });
   } finally {
-    await deleteApp(app).catch(() => {});
+    await deleteApp(app).catch((error: unknown) => {
+      // The request is over either way; a leaked app is tidied up by the runtime.
+      console.error("deleteApp", error);
+    });
   }
 }
 

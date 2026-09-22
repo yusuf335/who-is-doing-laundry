@@ -14,7 +14,9 @@ export type InstallState =
   | "manual" // iOS and anything else without one: show the steps instead
   | "unknown"; // still on the server, or the first paint
 
-const subscribeToNothing = () => () => {};
+const subscribeToNothing = () => () => {
+  // Nothing to unsubscribe from: this store never changes after the first render.
+};
 
 /** True once the app is running from the home screen rather than a browser tab. */
 function isStandalone(): boolean {

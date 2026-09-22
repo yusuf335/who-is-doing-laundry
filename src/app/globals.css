@@ -138,7 +138,9 @@
 @media (pointer: coarse) {
   /* Buttons are matched by their data-size because `asChild` triggers (menus, links)
      replace data-slot with their own. */
-  :is(button, a)[data-size]:not([data-size^="icon"]):not([data-size="xs"]):not([data-size="sm"]) {
+  :is(button, a)[data-size]:not([data-size^="icon"]):not([data-size="xs"]):not(
+      [data-size="sm"]
+    ) {
     min-height: 2.75rem;
   }
   :is(button, a)[data-size="sm"] {
@@ -164,4 +166,3 @@
     --cell-size: 2.5rem;
   }
 }
-
