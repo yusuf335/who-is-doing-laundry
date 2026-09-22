@@ -71,14 +71,14 @@ collide.
 
 ## Design decisions
 
-| Decision                           | Why                                                                                                                                               |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Google sign-in only                | No password endpoints to attack, and no credentials to store                                                                                      |
-| Writes only through server actions | One place to enforce the house rules, and the browser never decides                                                                               |
-| No persistent Firestore cache      | It is keyed by project, not by user, so a second Google account on the same browser inherits the first's cached documents                         |
-| No Cloud Functions                 | They need the paid plan. Notifications are raised by the first open app that notices; the scheduled email covers the case where nobody is looking |
-| Vercel over Firebase App Hosting   | App Hosting needs a billing account. On Spark, abuse can exhaust the daily quota but can never produce a bill                                     |
-| History kept for 7 days            | Long enough to claim a lost load, short enough not to be a record of anyone's habits                                                              |
+| Decision                              | Why                                                                                                                                                       |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Google sign-in only                   | No password endpoints to attack, and no credentials to store                                                                                              |
+| Writes only through server actions    | One place to enforce the house rules, and the browser never decides                                                                                       |
+| Offline cache, cleared on user change | The cache is keyed by app and project, not by user, so a second Google account inherits the first's documents. Switching users throws it away and reloads |
+| No Cloud Functions                    | They need the paid plan. Notifications are raised by the first open app that notices; the scheduled email covers the case where nobody is looking         |
+| Vercel over Firebase App Hosting      | App Hosting needs a billing account. On Spark, abuse can exhaust the daily quota but can never produce a bill                                             |
+| History kept for 7 days               | Long enough to claim a lost load, short enough not to be a record of anyone's habits                                                                      |
 
 ## Running it
 
@@ -114,6 +114,9 @@ Each of these cost real time and has a comment at the code.
   arrives and the app looks permanently offline.
 - `requireApproval` is mirrored onto the invite document because a newcomer cannot read a
   house they are not in.
+- The offline cache is shared by everyone who signs in on this browser, so it is cleared
+  when the uid changes. A stale one reports documents you may read as missing, with no
+  error to go on.
 
 ## License
 
