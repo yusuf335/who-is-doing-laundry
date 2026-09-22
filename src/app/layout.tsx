@@ -13,8 +13,6 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 export const metadata: Metadata = {
   title: "Who is doing laundry?",
   description: "See at a glance whether a machine is available, and book your slot.",
-  manifest: "/manifest.webmanifest",
-  appleWebApp: { capable: true, title: "Laundry", statusBarStyle: "default" },
 };
 
 export const viewport: Viewport = {

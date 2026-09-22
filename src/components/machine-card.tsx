@@ -11,7 +11,7 @@ import {
   IconWashMachine,
   IconWind,
 } from "@tabler/icons-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { BookingList } from "@/components/booking-list";
 import { useHouse } from "@/components/providers/house-provider";
@@ -40,11 +40,7 @@ import {
   type Machine,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import {
-  endSessionAction,
-  notifyCycleFinishedAction,
-  startSessionAction,
-} from "@/server/actions";
+import { endSessionAction, startSessionAction } from "@/server/actions";
 
 export function MachineCard({
   machine,
@@ -87,24 +83,6 @@ export function MachineCard({
         ),
       )
     : 0;
-
-  // Whoever's app first sees the machine sitting finished asks the server to notify its
-  // owner. The server records that it sent one, so several phones noticing at the same
-  // moment still produce a single notification.
-  const notified = useRef(false);
-  useEffect(() => {
-    if (state !== "finished" || !houseId || notified.current) return;
-    notified.current = true;
-    void runAction(() => notifyCycleFinishedAction({ houseId, machineId: machine.id }))
-      .catch((error: unknown) => {
-        // Somebody else's phone will raise it instead; not worth interrupting anyone.
-        console.error("notify finished", error);
-      })
-      .finally(() => {
-        // Allow one more attempt for the next cycle on this machine.
-        notified.current = state === "finished";
-      });
-  }, [state, houseId, machine.id]);
 
   const today = new Date(now);
   const machineBookings = bookings.filter((b) => b.machineId === machine.id);

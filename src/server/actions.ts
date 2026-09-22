@@ -86,21 +86,6 @@ export async function cancelBookingAction(input: { houseId: string; bookingId: s
   return act((ctx) => laundry.cancelBooking(ctx, input));
 }
 
-export async function registerDeviceAction(input: { houseId: string; token: string }) {
-  return act((ctx) => laundry.registerDevice(ctx, input));
-}
-
-export async function unregisterDeviceAction(input: { houseId: string; token: string }) {
-  return act((ctx) => laundry.unregisterDevice(ctx, input));
-}
-
-export async function notifyCycleFinishedAction(input: {
-  houseId: string;
-  machineId: string;
-}) {
-  return act((ctx) => laundry.notifyCycleFinished(ctx, input));
-}
-
 export async function pruneOldRecordsAction(input: { houseId: string }) {
   return act((ctx) => laundry.pruneOldRecords(ctx, input));
 }

@@ -2,7 +2,6 @@ import "server-only";
 
 import { FirebaseError } from "firebase/app";
 import {
-  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -26,8 +25,6 @@ import {
   houseDoc,
   housesCol,
   inviteCodeDoc,
-  deviceDoc,
-  devicesCol,
   joinRequestDoc,
   machineDoc,
   machinesCol,
@@ -41,7 +38,6 @@ import {
 import { dayAccess, defaultSchedule } from "@/lib/schedule";
 import { parseSender } from "@/lib/reminder";
 import { cancelScheduledEmail, scheduleCycleReminder } from "@/server/resend";
-import { sendPush } from "@/server/push";
 import {
   MAX_BOOKING_MINUTES,
   SLOT_MINUTES,
@@ -325,8 +321,8 @@ export async function joinHouse(
 }
 
 /**
- * Leaves the house, taking everything of yours with you: the membership, your upcoming
- * bookings and the slots they hold, and any devices registered for notifications.
+ * Leaves the house, taking everything of yours with you: the membership, and your
+ * upcoming bookings with the slots they hold.
  *
  * The admin cannot leave, because the rules forbid deleting the admin's membership and a
  * house with no admin can never be administered again. Transferring the role first would
@@ -347,18 +343,9 @@ export async function leaveHouse(ctx: ServerContext, input: { houseId: string })
     fail(`Mark ${(running.data() as Machine).name} as emptied before you leave.`);
   }
 
-  const [bookings, devices] = await Promise.all([
-    getDocs(
-      query(
-        bookingsCol(ctx.db, input.houseId),
-        where("uid", "==", member.uid),
-        limit(50),
-      ),
-    ),
-    getDocs(
-      query(devicesCol(ctx.db, input.houseId), where("uid", "==", member.uid), limit(50)),
-    ),
-  ]);
+  const bookings = await getDocs(
+    query(bookingsCol(ctx.db, input.houseId), where("uid", "==", member.uid), limit(50)),
+  );
 
   const batch = writeBatch(ctx.db);
   bookings.forEach((snap) => {
@@ -372,7 +359,6 @@ export async function leaveHouse(ctx: ServerContext, input: { houseId: string })
       batch.delete(slotDoc(ctx.db, input.houseId, id));
     }
   });
-  devices.forEach((snap) => batch.delete(snap.ref));
   batch.delete(memberDoc(ctx.db, input.houseId, member.uid));
   batch.set(userDoc(ctx.db, ctx.user.uid), { houseId: null }, { merge: true });
   await batch.commit();
@@ -554,95 +540,6 @@ export async function endSession(
   });
 
   if (reminderToCancel) await cancelScheduledEmail(reminderToCancel);
-}
-
-/* ------------------------------------------------------------------ notifications */
-
-/** Remembers this browser so finished-cycle notifications can reach it. */
-export async function registerDevice(
-  ctx: ServerContext,
-  input: { houseId: string; token: string },
-) {
-  const { member } = await requireMember(ctx, input.houseId);
-  const token = input.token.trim();
-  if (!token || token.length > 4096) fail("That notification token doesn't look right.");
-
-  await setDoc(deviceDoc(ctx.db, input.houseId, deviceIdFor(token)), {
-    uid: member.uid,
-    token,
-    displayName: member.displayName,
-    updatedAt: serverTimestamp(),
-  });
-}
-
-export async function unregisterDevice(
-  ctx: ServerContext,
-  input: { houseId: string; token: string },
-) {
-  await requireMember(ctx, input.houseId);
-  await deleteDoc(
-    deviceDoc(ctx.db, input.houseId, deviceIdFor(input.token.trim())),
-  ).catch((error: unknown) => {
-    // Already gone, or never registered. Either way there is nothing to remove.
-    console.error("unregister device", error);
-  });
-}
-
-/** Firestore ids cannot hold every character an FCM token can, so encode it. */
-function deviceIdFor(token: string): string {
-  return Buffer.from(token).toString("base64url").slice(0, 1400);
-}
-
-/**
- * Tells the owner their cycle has finished. Any housemate's app calls this when it sees a
- * machine sitting finished, and the session document records that it was sent, so several
- * phones noticing at once still produce exactly one notification.
- */
-export async function notifyCycleFinished(
-  ctx: ServerContext,
-  input: { houseId: string; machineId: string },
-) {
-  const { house } = await requireMember(ctx, input.houseId);
-
-  const machineSnap = await getDoc(machineDoc(ctx.db, input.houseId, input.machineId));
-  if (!machineSnap.exists()) return { sent: 0 };
-  const machine = machineSnap.data() as Omit<Machine, "id">;
-  const session = machine.currentSession;
-  if (machine.status !== "in_use" || !session) return { sent: 0 };
-  if (session.expectedEndAt.toMillis() > Date.now()) return { sent: 0 };
-  if (!session.sessionId) return { sent: 0 };
-
-  const logRef = sessionDoc(ctx.db, input.houseId, session.sessionId);
-  const claimed = await runTransaction(ctx.db, async (tx) => {
-    const snap = await tx.get(logRef);
-    if (!snap.exists() || snap.data()?.notifiedAt) return false;
-    tx.update(logRef, { notifiedAt: Timestamp.now() });
-    return true;
-  }).catch(() => false);
-  if (!claimed) return { sent: 0 };
-
-  const devices = await getDocs(query(devicesCol(ctx.db, input.houseId), limit(50)));
-  const tokens = devices.docs
-    .map((d) => d.data() as { uid?: string; token?: string })
-    .filter((d) => d.uid === session.uid && typeof d.token === "string")
-    .map((d) => d.token as string);
-
-  const { sent, stale } = await sendPush(tokens, {
-    title: "Your laundry is done",
-    body: `The ${machine.name} at ${house.name} has finished. Empty it when you can.`,
-    tag: `machine-${input.machineId}`,
-    url: "/",
-  });
-
-  for (const token of stale) {
-    await deleteDoc(deviceDoc(ctx.db, input.houseId, deviceIdFor(token))).catch(
-      (error: unknown) => {
-        // A token we could not delete simply fails again next time, harmlessly.
-        console.error("drop stale device", error);
-      },
-    );
-  }
-  return { sent };
 }
 
 /* ------------------------------------------------------------------ bookings */

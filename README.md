@@ -44,8 +44,8 @@ Three ideas carry the design:
   ignored, advisory, or strict.
 - **History.** Seven days, so laundry left in a drum finds its owner, then deleted.
 - **Joining.** An invite code, optionally gated by admin approval.
-- **Telling you.** A push notification when your laundry is done, and an email if both the
-  admin and you switch it on.
+- **Telling you.** An email when your laundry is done, if both the admin and you switch it
+  on. Both default to off.
 
 ## Data model
 
@@ -60,7 +60,6 @@ houses/{houseId}               name, groups, schedule, settings, adminUid
   slots/{machineId_slotIndex}  one lock per 15 minutes a booking holds
   sessions/{id}                the seven-day log
   joinRequests/{uid}           pending, approved or declined
-  devices/{id}                 push registrations
 ```
 
 Two choices worth knowing. Bookings cannot overlap because each one creates a lock
@@ -117,6 +116,12 @@ Each of these cost real time and has a comment at the code.
 - The offline cache is shared by everyone who signs in on this browser, so it is cleared
   when the uid changes. A stale one reports documents you may read as missing, with no
   error to go on.
+- Sign-in falls back to a full-page redirect, because browsers block popups and an
+  installed app cannot open one at all.
+- The session cookie must be written before anything reacts to being signed in. Publish
+  the user first and a page can navigate while the cookie is still being written; the
+  proxy then sees a signed-out request and bounces it back to `/login`, which reads as a
+  login loop.
 
 ## License
 

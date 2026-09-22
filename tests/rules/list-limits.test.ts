@@ -56,7 +56,6 @@ describe("list queries must be bounded", () => {
     "bookings",
     "sessions",
     "slots",
-    "devices",
     "joinRequests",
   ];
 

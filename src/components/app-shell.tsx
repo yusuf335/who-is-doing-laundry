@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  IconBell,
   IconCalendarEvent,
   IconHistory,
   IconLogout,
@@ -14,10 +13,8 @@ import {
 import { useTheme } from "next-themes";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 import { useAuth } from "@/components/providers/auth-provider";
-import { InstallBanner } from "@/components/install-banner";
-import { NotificationSettings } from "@/components/notification-settings";
 import { useHouse } from "@/components/providers/house-provider";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -78,7 +75,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { signOut } = useAuth();
   const { house, member, isAdmin } = useHouse();
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
 
   const nav = NAV;
 
@@ -133,10 +129,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </span>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => setNotificationsOpen(true)}>
-                <IconBell />
-                Notifications
-              </DropdownMenuItem>
               <DropdownMenuItem asChild>
                 <Link href="/privacy">
                   <IconShieldLock />
@@ -158,14 +150,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </header>
 
       <main className="mx-auto w-full max-w-3xl flex-1 space-y-3 px-4 pt-4 pb-24 md:pb-10">
-        <InstallBanner />
         {children}
       </main>
-
-      <NotificationSettings
-        open={notificationsOpen}
-        onOpenChange={setNotificationsOpen}
-      />
 
       <nav className="bg-background/95 fixed inset-x-0 bottom-0 z-30 border-t pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
         <div className="mx-auto flex max-w-3xl">

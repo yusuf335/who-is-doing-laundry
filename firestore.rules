@@ -182,26 +182,13 @@ service cloud.firestore {
           && request.resource.data.startedAt is timestamp;
         // Anyone in the house may close a cycle (that is the "I emptied it" button), and
         // the server stamps the id of the scheduled reminder. Nothing else can be rewritten.
-        allow update: if isMember(houseId)
-          && onlyChanges(['endedAt', 'reminderId', 'notifiedAt']);
+        allow update: if isMember(houseId) && onlyChanges(['endedAt', 'reminderId']);
         allow delete: if isMember(houseId) && (isAdmin(houseId) || staleSession());
       }
 
       function staleSession() {
         return resource.data.startedAt is timestamp
           && resource.data.startedAt <= request.time - duration.value(7, 'd');
-      }
-
-      // Push registrations. Every member can read them, because sending "your wash is
-      // done" means reading the owner's tokens from whoever's app noticed. A token only
-      // identifies a browser; it cannot be used to send anything without the server key.
-      match /devices/{deviceId} {
-        allow get: if isMember(houseId);
-        allow list: if isMember(houseId) && boundedList();
-        allow create, update: if isMember(houseId)
-          && request.resource.data.uid == uid()
-          && request.resource.data.token is string;
-        allow delete: if isMember(houseId) && resource.data.uid == uid();
       }
 
       match /bookings/{bookingId} {

@@ -34,12 +34,6 @@ export const APP_CHECK_COOKIE = "__app_check";
  */
 export const appCheckSiteKey = process.env.NEXT_PUBLIC_FIREBASE_APPCHECK_SITE_KEY ?? "";
 
-/**
- * Web Push certificate from the Firebase console (Cloud Messaging, Web configuration).
- * Without it the app simply never offers notifications.
- */
-export const vapidKey = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY ?? "";
-
 /** The serialisable slice of a Firebase user that the app actually needs. */
 export interface AuthUser {
   uid: string;

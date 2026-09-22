@@ -25,15 +25,6 @@ export const bookingsCol = (db: Firestore, houseId: string) =>
 export const bookingDoc = (db: Firestore, houseId: string, bookingId: string) =>
   doc(db, "houses", houseId, "bookings", bookingId);
 
-/**
- * One document per browser that asked for notifications. House-scoped rather than nested
- * under a member, because sending a notification means reading someone else's tokens.
- */
-export const devicesCol = (db: Firestore, houseId: string) =>
-  collection(db, "houses", houseId, "devices");
-export const deviceDoc = (db: Firestore, houseId: string, deviceId: string) =>
-  doc(db, "houses", houseId, "devices", deviceId);
-
 export const joinRequestsCol = (db: Firestore, houseId: string) =>
   collection(db, "houses", houseId, "joinRequests");
 export const joinRequestDoc = (db: Firestore, houseId: string, uid: string) =>

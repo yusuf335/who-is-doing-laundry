@@ -27,9 +27,7 @@ import {
   joinHouse,
   leaveHouse,
   lookupInviteCode,
-  notifyCycleFinished,
   pruneOldRecords,
-  registerDevice,
   regenerateInviteCode,
   removeMachine,
   reorderMachines,
@@ -37,7 +35,6 @@ import {
   renameMachine,
   setJoinApproval,
   startSession,
-  unregisterDevice,
   updateHouseDetails,
   updateMachineCycles,
   updateMemberGroup,
@@ -167,19 +164,6 @@ const listBookings = (houseId: string) =>
 
 const listSessions = (houseId: string) =>
   raw(async (db) => (await getDocs(collection(db, "houses", houseId, "sessions"))).docs);
-
-/** Mirrors deviceIdFor() in the server module, which is private on purpose. */
-const deviceId = (token: string) =>
-  Buffer.from(token).toString("base64url").slice(0, 1400);
-
-const listDevices = (houseId: string) =>
-  raw(async (db) => (await getDocs(collection(db, "houses", houseId, "devices"))).docs);
-
-const readDevice = (houseId: string, token: string) =>
-  raw(async (db) => {
-    const snap = await getDoc(doc(db, "houses", houseId, "devices", deviceId(token)));
-    return snap.exists() ? (snap.data() as Record<string, unknown>) : undefined;
-  });
 
 const readSession = (houseId: string, sessionId: string) =>
   raw(async (db) => {
@@ -630,7 +614,7 @@ describe("join approval", () => {
 });
 
 describe("leaveHouse", () => {
-  it("takes the membership, the bookings, their slots and the devices", async () => {
+  it("takes the membership, the bookings and their slots", async () => {
     const { houseId, washerId, dryerId } = await setupHouse();
 
     await createBooking(member(), {
@@ -639,8 +623,6 @@ describe("leaveHouse", () => {
       startMs: futureSlot(2),
       endMs: futureSlot(3),
     });
-    await registerDevice(member(), { houseId, token: "tok-mo" });
-
     // Another housemate's things, which must survive untouched.
     await createBooking(other(), {
       houseId,
@@ -648,8 +630,6 @@ describe("leaveHouse", () => {
       startMs: futureSlot(2),
       endMs: futureSlot(3),
     });
-    await registerDevice(other(), { houseId, token: "tok-olu" });
-
     const result = await leaveHouse(member(), { houseId });
     expect(result).toEqual({ bookingsCancelled: 1 });
 
@@ -663,10 +643,6 @@ describe("leaveHouse", () => {
     const slots = await listSlots(houseId);
     expect(slots.length).toBe(4); // only the other member's hour remains
     expect(slots.every((slot) => slot.data().uid === OTHER)).toBe(true);
-
-    const devices = await listDevices(houseId);
-    expect(devices.length).toBe(1);
-    expect(devices[0].data().uid).toBe(OTHER);
   });
 
   it("reports nothing cancelled when there was nothing booked", async () => {
@@ -1931,159 +1907,5 @@ describe("regenerateInviteCode", () => {
       "Only the house admin",
     );
     expect((await readHouse(houseId)).inviteCode).toBe(code);
-  });
-});
-
-// Keep the unused import honest: deleteDoc is handy when debugging a failing seed.
-void deleteDoc;
-
-describe("devices", () => {
-  it("remembers a browser under an id derived from its token", async () => {
-    const { houseId } = await setupHouse();
-    const token = "fcm-token-for-mo:with/odd+characters";
-
-    await registerDevice(member(), { houseId, token });
-
-    const stored = (await readDevice(houseId, token))!;
-    expect(stored).toMatchObject({ uid: MEMBER, token, displayName: "Mo" });
-    expect(stored.updatedAt).toBeDefined();
-  });
-
-  it("updates rather than duplicating when the same token comes back", async () => {
-    const { houseId } = await setupHouse();
-    const token = "fcm-token-repeat";
-
-    await registerDevice(member(), { houseId, token });
-    await registerDevice(member(), { houseId, token });
-
-    expect((await listDevices(houseId)).length).toBe(1);
-  });
-
-  it("keeps one entry per browser, per person", async () => {
-    const { houseId } = await setupHouse();
-    await registerDevice(member(), { houseId, token: "mo-phone" });
-    await registerDevice(member(), { houseId, token: "mo-laptop" });
-    await registerDevice(other(), { houseId, token: "olu-phone" });
-
-    const devices = await listDevices(houseId);
-    expect(devices.length).toBe(3);
-    expect(devices.filter((d) => d.data().uid === MEMBER).length).toBe(2);
-  });
-
-  it("refuses a token that is blank or absurdly long", async () => {
-    const { houseId } = await setupHouse();
-    await expectLaundryError(
-      registerDevice(member(), { houseId, token: "   " }),
-      "doesn't look right",
-    );
-    await expectLaundryError(
-      registerDevice(member(), { houseId, token: "x".repeat(4097) }),
-      "doesn't look right",
-    );
-    expect((await listDevices(houseId)).length).toBe(0);
-  });
-
-  it("refuses a stranger", async () => {
-    const { houseId } = await setupHouse();
-    await expectLaundryError(
-      registerDevice(stranger(), { houseId, token: "sky-phone" }),
-      "not a member",
-    );
-    await expectLaundryError(
-      unregisterDevice(stranger(), { houseId, token: "sky-phone" }),
-      "not a member",
-    );
-  });
-
-  it("forgets a browser again, and shrugs at one it never knew", async () => {
-    const { houseId } = await setupHouse();
-    await registerDevice(member(), { houseId, token: "mo-phone" });
-
-    await unregisterDevice(member(), { houseId, token: "mo-phone" });
-    expect(await readDevice(houseId, "mo-phone")).toBeUndefined();
-
-    await expect(
-      unregisterDevice(member(), { houseId, token: "never-seen" }),
-    ).resolves.toBeUndefined();
-  });
-});
-
-describe("notifyCycleFinished", () => {
-  /** A real cycle, rewound so its expected end has already passed. */
-  async function seedFinished(houseId: string, machineId: string) {
-    await startSession(member(), { houseId, machineId, minutes: 45 });
-    const machine = (await readMachine(houseId, machineId))!;
-    const session = machine.currentSession!;
-    await raw(async (db) => {
-      await setDoc(doc(db, "houses", houseId, "machines", machineId), {
-        ...machine,
-        currentSession: {
-          ...session,
-          expectedEndAt: Timestamp.fromMillis(Date.now() - 60_000),
-        },
-      });
-    });
-    return session.sessionId;
-  }
-
-  it("says nothing when the machine is free, gone, or still running", async () => {
-    const { houseId, washerId } = await setupHouse();
-
-    expect(await notifyCycleFinished(member(), { houseId, machineId: washerId })).toEqual(
-      {
-        sent: 0,
-      },
-    );
-    expect(
-      await notifyCycleFinished(member(), { houseId, machineId: "no-such-machine" }),
-    ).toEqual({ sent: 0 });
-
-    await startSession(member(), { houseId, machineId: washerId, minutes: 90 });
-    expect(await notifyCycleFinished(member(), { houseId, machineId: washerId })).toEqual(
-      {
-        sent: 0,
-      },
-    );
-    const sessionId = (await readMachine(houseId, washerId))!.currentSession!.sessionId;
-    expect((await readSession(houseId, sessionId))!.notifiedAt).toBeUndefined();
-  });
-
-  it("stamps the log entry once, however many phones notice", async () => {
-    const { houseId, washerId } = await setupHouse();
-    const sessionId = await seedFinished(houseId, washerId);
-
-    // No FCM credentials in tests, so nothing is delivered; the claim is what matters.
-    expect(await notifyCycleFinished(member(), { houseId, machineId: washerId })).toEqual(
-      {
-        sent: 0,
-      },
-    );
-    const first = (await readSession(houseId, sessionId))!.notifiedAt as Timestamp;
-    expect(first).toBeDefined();
-
-    expect(await notifyCycleFinished(other(), { houseId, machineId: washerId })).toEqual({
-      sent: 0,
-    });
-    const second = (await readSession(houseId, sessionId))!.notifiedAt as Timestamp;
-    expect(second.toMillis()).toBe(first.toMillis());
-  });
-
-  it("can be raised by a housemate who did not start the cycle", async () => {
-    const { houseId, washerId } = await setupHouse();
-    const sessionId = await seedFinished(houseId, washerId);
-
-    expect(await notifyCycleFinished(other(), { houseId, machineId: washerId })).toEqual({
-      sent: 0,
-    });
-    expect((await readSession(houseId, sessionId))!.notifiedAt).toBeDefined();
-  });
-
-  it("refuses a stranger", async () => {
-    const { houseId, washerId } = await setupHouse();
-    await seedFinished(houseId, washerId);
-    await expectLaundryError(
-      notifyCycleFinished(stranger(), { houseId, machineId: washerId }),
-      "not a member",
-    );
   });
 });

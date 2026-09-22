@@ -141,18 +141,6 @@ async function seedHouse() {
       endAt: Timestamp.fromMillis(grid(Date.now() + 7_200_000)),
       slotIndex: 0,
     });
-    await setDoc(doc(db, `${housePath}/devices/d_member`), {
-      uid: MEMBER,
-      token: "token-member",
-      displayName: "Someone",
-      updatedAt: serverTimestamp(),
-    });
-    await setDoc(doc(db, `${housePath}/devices/d_other`), {
-      uid: OTHER,
-      token: "token-other",
-      displayName: "Someone else",
-      updatedAt: serverTimestamp(),
-    });
     // A booking (and slot) whose time has passed; anyone may sweep these.
     await setDoc(doc(db, `${housePath}/bookings/b_past`), {
       machineId: MACHINE,
@@ -726,17 +714,24 @@ describe("sessions (the 7-day laundry log)", () => {
       }),
     );
     await assertSucceeds(
-      updateDoc(doc(dbAs(OTHER), `${housePath}/sessions/s1`), {
-        notifiedAt: Timestamp.now(),
+      updateDoc(doc(dbAs(MEMBER), `${housePath}/sessions/s1`), {
+        reminderId: "re_123",
       }),
     );
     await assertFails(
       updateDoc(doc(dbAs(MEMBER), `${housePath}/sessions/s1`), { displayName: "Nope" }),
     );
+    // notifiedAt belonged to push notifications, which the app no longer has. The rule
+    // lists its allowed fields, so a write naming it is refused rather than ignored.
     await assertFails(
       updateDoc(doc(dbAs(MEMBER), `${housePath}/sessions/s1`), {
         notifiedAt: Timestamp.now(),
-        displayName: "Nope",
+      }),
+    );
+    await assertFails(
+      updateDoc(doc(dbAs(MEMBER), `${housePath}/sessions/s1`), {
+        endedAt: Timestamp.now(),
+        notifiedAt: Timestamp.now(),
       }),
     );
     await assertFails(
@@ -753,68 +748,6 @@ describe("sessions (the 7-day laundry log)", () => {
 
   it("lets the admin delete any entry", async () => {
     await assertSucceeds(deleteDoc(doc(dbAs(ADMIN), `${housePath}/sessions/s1`)));
-  });
-});
-
-describe("devices (push registrations)", () => {
-  const device = (uid: string, extra: Record<string, unknown> = {}) => ({
-    uid,
-    token: `token-${uid}`,
-    displayName: "Someone",
-    updatedAt: serverTimestamp(),
-    ...extra,
-  });
-
-  it("is closed to everyone outside the house", async () => {
-    await assertFails(getDoc(doc(dbAs(null), `${housePath}/devices/d_member`)));
-    await assertFails(getDoc(doc(dbAs(STRANGER), `${housePath}/devices/d_member`)));
-    await assertFails(
-      setDoc(doc(dbAs(STRANGER), `${housePath}/devices/d_new`), device(STRANGER)),
-    );
-  });
-
-  it("lets members read one and list a bounded page", async () => {
-    // Sending "your laundry is done" means reading the owner's tokens, so any member can.
-    await assertSucceeds(getDoc(doc(dbAs(OTHER), `${housePath}/devices/d_member`)));
-    await assertSucceeds(
-      getDocs(query(collection(dbAs(MEMBER), `${housePath}/devices`), limit(50))),
-    );
-  });
-
-  it("refuses an unbounded or oversized list", async () => {
-    await assertFails(getDocs(collection(dbAs(MEMBER), `${housePath}/devices`)));
-    await assertFails(
-      getDocs(query(collection(dbAs(MEMBER), `${housePath}/devices`), limit(201))),
-    );
-  });
-
-  it("lets a member register only their own device", async () => {
-    await assertSucceeds(
-      setDoc(doc(dbAs(MEMBER), `${housePath}/devices/d_mine`), device(MEMBER)),
-    );
-    await assertFails(
-      setDoc(doc(dbAs(MEMBER), `${housePath}/devices/d_theirs`), device(OTHER)),
-    );
-  });
-
-  it("requires a string token", async () => {
-    await assertFails(
-      setDoc(
-        doc(dbAs(MEMBER), `${housePath}/devices/d_bad`),
-        without(device(MEMBER), "token"),
-      ),
-    );
-    await assertFails(
-      setDoc(
-        doc(dbAs(MEMBER), `${housePath}/devices/d_bad2`),
-        device(MEMBER, { token: 42 }),
-      ),
-    );
-  });
-
-  it("lets a member drop their own registration only", async () => {
-    await assertFails(deleteDoc(doc(dbAs(MEMBER), `${housePath}/devices/d_other`)));
-    await assertSucceeds(deleteDoc(doc(dbAs(MEMBER), `${housePath}/devices/d_member`)));
   });
 });
 

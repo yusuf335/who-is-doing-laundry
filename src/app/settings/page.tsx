@@ -135,9 +135,9 @@ function Settings() {
     <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Your notifications</CardTitle>
+          <CardTitle className="text-base">Email me</CardTitle>
           <CardDescription>
-            Yours alone. Changing these does nothing to your housemates.
+            Yours alone. Changing this does nothing to your housemates.
           </CardDescription>
         </CardHeader>
         <CardContent>
