@@ -51,8 +51,17 @@ function runningAsInstalledApp(): boolean {
 
 /** Writes the cookie the server reads, before any navigation that depends on it. */
 async function syncCookie(user: User | null): Promise<void> {
-  if (user) writeSessionCookie(await user.getIdToken());
-  else clearSessionCookie();
+  if (!user) {
+    clearSessionCookie();
+    return;
+  }
+  try {
+    writeSessionCookie(await user.getIdToken());
+  } catch (error) {
+    // Without the cookie the server cannot see this session, so every page would bounce
+    // to /login. Loud, because the app still half-works and the cause is invisible.
+    console.error("could not write the session cookie", error);
+  }
 }
 
 export function AuthProvider({
@@ -91,9 +100,15 @@ export function AuthProvider({
       }
       if (next) rememberUser(next.uid);
 
-      void syncCookie(next);
-      setUser(next ? toAuthUser(next) : null);
-      setLoading(false);
+      // The cookie has to exist *before* anything reacts to being signed in. Publishing
+      // the user first lets a page navigate while the cookie is still being written, and
+      // the proxy then sees a signed-out request and sends it back to /login, which
+      // reads as a login loop.
+      void (async () => {
+        await syncCookie(next);
+        setUser(next ? toAuthUser(next) : null);
+        setLoading(false);
+      })();
     });
   }, []);
 

@@ -28,3 +28,11 @@ export function writeAppCheckCookie(token: string): void {
   if (typeof document === "undefined") return;
   document.cookie = `${APP_CHECK_COOKIE}=${token}; Max-Age=${60 * 60}; ${attributes()}`;
 }
+
+/** Whether the server would see this browser as signed in. */
+export function hasSessionCookie(): boolean {
+  if (typeof document === "undefined") return false;
+  return document.cookie
+    .split("; ")
+    .some((part) => part.startsWith(`${SESSION_COOKIE}=`));
+}

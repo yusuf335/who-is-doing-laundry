@@ -11,6 +11,7 @@ import { SetupNotice } from "@/components/setup-notice";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { errorMessage } from "@/lib/errors";
+import { hasSessionCookie } from "@/lib/session-cookie";
 import { isFirebaseConfigured } from "@/lib/firebase";
 
 export default function LoginPage() {
@@ -19,10 +20,14 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (user) router.replace("/");
+    // Only leave once the proxy would recognise us. Navigating on `user` alone races the
+    // cookie write and bounces straight back here.
+    if (user && hasSessionCookie()) router.replace("/");
   }, [user, router]);
 
   if (!isFirebaseConfigured) return <SetupNotice />;
+  // `user` arrives a tick before the cookie does, so the spinner stays until both are
+  // ready rather than flashing the sign-in button, which would read as a failure.
   if (loading || user) return <LoadingScreen />;
 
   async function signIn() {
