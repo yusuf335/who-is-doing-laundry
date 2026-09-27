@@ -1,9 +1,21 @@
 import type { FirebaseOptions } from "firebase/app";
 
 /** Side-effect free so both the browser SDK and the server helper can import it. */
+/**
+ * Sign-in runs against this app's own origin, where `next.config.ts` proxies Firebase's
+ * helper. Pointing it at `<project>.firebaseapp.com` instead makes the flow cross-site,
+ * and a browser that partitions storage then completes the sign-in without ever handing
+ * the credential back. Falls back to the configured value on the server, where there is
+ * no origin to read.
+ */
+function authDomain(): string | undefined {
+  if (typeof window !== "undefined") return window.location.host;
+  return process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN;
+}
+
 export const firebaseConfig: FirebaseOptions = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  authDomain: authDomain(),
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
   storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
   messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
