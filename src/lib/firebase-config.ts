@@ -5,11 +5,18 @@ import type { FirebaseOptions } from "firebase/app";
  * Sign-in runs against this app's own origin, where `next.config.ts` proxies Firebase's
  * helper. Pointing it at `<project>.firebaseapp.com` instead makes the flow cross-site,
  * and a browser that partitions storage then completes the sign-in without ever handing
- * the credential back. Falls back to the configured value on the server, where there is
- * no origin to read.
+ * the credential back.
+ *
+ * Only over https, though. Firebase always builds the helper URL as `https://<domain>`,
+ * so handing it a plain-http dev server produces https://localhost:3001 and a protocol
+ * error. Local development therefore keeps using the Firebase-hosted helper, which is
+ * fine: storage partitioning does not bite on localhost, and it is one less redirect URI
+ * to register.
  */
 function authDomain(): string | undefined {
-  if (typeof window !== "undefined") return window.location.host;
+  if (typeof window !== "undefined" && window.location.protocol === "https:") {
+    return window.location.host;
+  }
   return process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN;
 }
 
