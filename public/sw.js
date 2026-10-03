@@ -21,8 +21,10 @@ self.addEventListener("push", (event) => {
       body: message.body || "",
       icon: "/icon-192.png",
       badge: "/icon-192.png",
-      // A newer notification about the same cycle or booking replaces the older one.
+      // A newer notification about the same cycle or booking replaces the older one,
+      // and still announces itself: without renotify the replacement lands silently.
       tag: message.tag || "laundry",
+      renotify: true,
       data: { url: message.url || "/" },
     }),
   );

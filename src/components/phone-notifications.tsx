@@ -101,7 +101,19 @@ export function PhoneNotifications() {
   async function test() {
     setBusy(true);
     try {
-      await runAction(() => sendTestPushAction());
+      const subscription = await currentSubscription();
+      if (!subscription) {
+        setState("off");
+        throw new Error(
+          "This browser is no longer subscribed. Turn notifications on again.",
+        );
+      }
+      await runAction(() =>
+        sendTestPushAction({
+          subscription: subscription.toJSON(),
+          label: deviceLabel(navigator.userAgent),
+        }),
+      );
       toast.success("Sent. It should arrive in a moment.");
     } catch (error) {
       toast.error(errorMessage(error, "Could not send a test."));

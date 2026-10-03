@@ -32,9 +32,9 @@ export function pushConfigured(): boolean {
 export async function sendPush(
   targets: PushTarget[],
   payload: PushPayload,
-): Promise<{ sent: number; gone: string[] }> {
+): Promise<{ sent: number; gone: string[]; refused: number[] }> {
   const keys = vapid();
-  if (!keys || targets.length === 0) return { sent: 0, gone: [] };
+  if (!keys || targets.length === 0) return { sent: 0, gone: [], refused: [] };
 
   const body = JSON.stringify(payload);
   const results = await Promise.all(
@@ -48,10 +48,13 @@ export async function sendPush(
         });
         return "sent" as const;
       } catch (error) {
-        const status = (error as { statusCode?: number }).statusCode;
-        if (status === 404 || status === 410) return "gone" as const;
-        console.error("push: could not deliver", status, error);
-        return "failed" as const;
+        const { statusCode, body: reply } = error as {
+          statusCode?: number;
+          body?: string;
+        };
+        if (statusCode === 404 || statusCode === 410) return "gone" as const;
+        console.error("push: could not deliver", statusCode, reply ?? error);
+        return statusCode ?? 0;
       }
     }),
   );
@@ -59,5 +62,7 @@ export async function sendPush(
   return {
     sent: results.filter((r) => r === "sent").length,
     gone: targets.filter((_, i) => results[i] === "gone").map((t) => t.endpoint),
+    // The push services' status codes for anything else refused, for diagnosis.
+    refused: results.filter((r): r is number => typeof r === "number"),
   };
 }

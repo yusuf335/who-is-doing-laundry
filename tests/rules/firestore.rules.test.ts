@@ -810,7 +810,9 @@ describe("notification ids on sessions and bookings", () => {
 
   it("lets only a booking's owner note its notification id, and nothing else", async () => {
     const path = `${housePath}/bookings/b1`; // MEMBER's booking
-    await assertSucceeds(updateDoc(doc(dbAs(MEMBER), path), { pushId: "msg_1" }));
+    await assertSucceeds(
+      updateDoc(doc(dbAs(MEMBER), path), { pushId: "msg_1", reminderId: "re_1" }),
+    );
     await assertFails(updateDoc(doc(dbAs(ADMIN), path), { pushId: "msg_2" }));
     await assertFails(
       updateDoc(doc(dbAs(MEMBER), path), {
@@ -819,8 +821,9 @@ describe("notification ids on sessions and bookings", () => {
       }),
     );
     await assertFails(updateDoc(doc(dbAs(MEMBER), path), { pushId: 42 }));
-    // Once noted, it cannot be swapped for someone else's.
+    // Once noted, neither can be swapped for someone else's.
     await assertFails(updateDoc(doc(dbAs(MEMBER), path), { pushId: "msg_4" }));
+    await assertFails(updateDoc(doc(dbAs(MEMBER), path), { reminderId: "re_2" }));
   });
 });
 

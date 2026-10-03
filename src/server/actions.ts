@@ -99,8 +99,15 @@ export async function removePushDeviceAction(input: { endpoint: string }) {
   return act((ctx) => laundry.removePushDevice(ctx, input));
 }
 
-export async function sendTestPushAction() {
-  return act((ctx) => laundry.sendTestPush(ctx));
+export async function sendTestPushAction(input: {
+  subscription: unknown;
+  label: string;
+}) {
+  return act((ctx) => laundry.sendTestPush(ctx, input));
+}
+
+export async function sendTestEmailAction(input: { houseId: string }) {
+  return act((ctx) => laundry.sendTestEmail(ctx, input));
 }
 
 export async function pruneOldRecordsAction(input: { houseId: string }) {

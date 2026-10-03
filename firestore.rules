@@ -242,17 +242,26 @@ service cloud.firestore {
           && request.resource.data.endAt.toMillis() - request.resource.data.startAt.toMillis() <= 21600000
           && request.resource.data.endAt > request.time
           && !('pushId' in request.resource.data)
+          && !('reminderId' in request.resource.data)
           // Two weeks ahead in whole days (MAX_DAYS_AHEAD); a day's slack for time zones,
           // the same as the server.
           && request.resource.data.startAt <= request.time + duration.value(15, 'd');
         // Edits go through cancel + rebook so the slot locks always match the booking.
-        // The one exception: the owner noting the id of its "starts soon" notification.
+        // The one exception: the owner noting the ids of its "starts soon" reminders
+        // (phone and email), once. The server checks each id before using it.
         allow update: if isMember(houseId)
           && resource.data.uid == uid()
           && !('pushId' in resource.data)
-          && onlyChanges(['pushId'])
-          && request.resource.data.pushId is string
-          && request.resource.data.pushId.size() <= 200;
+          && !('reminderId' in resource.data)
+          && onlyChanges(['pushId', 'reminderId'])
+          // Must actually set one: an empty rewrite is still a rewrite.
+          && ('pushId' in request.resource.data || 'reminderId' in request.resource.data)
+          && (!('pushId' in request.resource.data)
+            || (request.resource.data.pushId is string
+              && request.resource.data.pushId.size() <= 200))
+          && (!('reminderId' in request.resource.data)
+            || (request.resource.data.reminderId is string
+              && request.resource.data.reminderId.size() <= 200));
         // Owners and the admin cancel; anyone may sweep a booking whose time has passed,
         // which is how the app keeps no record of past bookings.
         allow delete: if isMember(houseId)

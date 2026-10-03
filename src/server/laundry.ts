@@ -53,7 +53,13 @@ import { dayAccess, defaultSchedule } from "@/lib/schedule";
 import { parseSender } from "@/lib/reminder";
 import { pushConfigured, sendPush } from "@/server/push";
 import { cancelPush, schedulePush, schedulingConfigured } from "@/server/qstash";
-import { cancelScheduledEmail, scheduleCycleReminder } from "@/server/resend";
+import {
+  cancelScheduledEmail,
+  remindersEnabled,
+  scheduleBookingReminder,
+  scheduleCycleReminder,
+  sendTestEmail as deliverTestEmail,
+} from "@/server/resend";
 import {
   MAX_BOOKING_MINUTES,
   SLOT_MINUTES,
@@ -433,6 +439,7 @@ export async function startSession(
   );
 
   let machineName = "machine";
+  let machineColor: string | undefined;
   const claimedBy = (machine: Omit<Machine, "id">) =>
     fail(
       `${machine.name} was just claimed by ${machine.currentSession?.displayName ?? "someone"}.`,
@@ -448,6 +455,7 @@ export async function startSession(
     if (!snap.exists()) fail("That machine no longer exists.");
     const machine = snap.data() as Omit<Machine, "id">;
     machineName = machine.name;
+    machineColor = machine.color;
     const longest = maxMinutesOf(machine);
     if (minutes > longest) {
       fail(`${machine.name} runs at most ${longest} minutes per cycle.`);
@@ -520,6 +528,8 @@ export async function startSession(
     machineName,
     houseName: house.name,
     finishesAt: expectedEndAt.toDate(),
+    timeZone: house.timeZone,
+    accent: machineColor,
     from: house.emailFrom,
   });
   if (reminderId) {
@@ -544,6 +554,7 @@ export async function endSession(
   let reminderToCancel: string | null = null;
   let pushToCancel: string | null = null;
   let pushTag = "";
+  let ownerUid = "";
 
   await runTransaction(ctx.db, async (tx) => {
     const snap = await tx.get(machineRef);
@@ -551,6 +562,7 @@ export async function endSession(
     const machine = snap.data() as Omit<Machine, "id">;
     const session = machine.currentSession;
     if (machine.status === "free" || !session) return;
+    ownerUid = session.uid;
 
     const finished = session.expectedEndAt.toMillis() <= Date.now();
     if (session.uid !== member.uid && !isAdmin && !finished) {
@@ -579,7 +591,12 @@ export async function endSession(
     }
   });
 
-  if (reminderToCancel) await cancelScheduledEmail(reminderToCancel);
+  if (reminderToCancel) {
+    await cancelScheduledEmail(
+      reminderToCancel,
+      await emailOf(ctx, input.houseId, ownerUid),
+    );
+  }
   if (pushToCancel) await cancelPush(pushToCancel, pushTag);
 }
 
@@ -619,6 +636,7 @@ export async function createBooking(
   // A running cycle is not a booking, so the slots below would not catch it.
   const {
     name: machineName,
+    color: machineColorOf,
     status,
     currentSession: running,
   } = machine.data() as Machine;
@@ -679,21 +697,42 @@ export async function createBooking(
     throw error;
   });
 
+  // "Starts in 15 minutes", on the phone and (if both switches are on) by email. Both
+  // ids are noted in one write so either can be called off if the booking is cancelled.
   const remindAt = bookingReminderAt(start.getTime(), Date.now());
   if (remindAt) {
-    const pushId = await schedulePushForMe(
-      ctx,
-      remindAt,
-      bookingSoonPush({
-        machineName,
-        bookingId: bookingRef.id,
-        start,
-        timeZone: house.timeZone,
-      }),
-    );
-    if (pushId) {
-      await updateDoc(bookingRef, { pushId }).catch((error: unknown) => {
-        console.error("store push id", error);
+    const [pushId, reminderId] = await Promise.all([
+      schedulePushForMe(
+        ctx,
+        remindAt,
+        bookingSoonPush({
+          machineName,
+          bookingId: bookingRef.id,
+          start,
+          timeZone: house.timeZone,
+        }),
+      ),
+      house.emailReminders === true && member.emailReminders === true
+        ? scheduleBookingReminder(
+            {
+              to: member.email,
+              from: house.emailFrom,
+              displayName: member.displayName,
+              machineName,
+              houseName: house.name,
+              startsAt: start,
+              endsAt: end,
+              timeZone: house.timeZone,
+              accent: machineColorOf,
+            },
+            remindAt,
+          )
+        : Promise.resolve(null),
+    ]);
+    const ids = { ...(pushId ? { pushId } : {}), ...(reminderId ? { reminderId } : {}) };
+    if (Object.keys(ids).length > 0) {
+      await updateDoc(bookingRef, ids).catch((error: unknown) => {
+        console.error("store reminder ids", error);
       });
     }
   }
@@ -724,8 +763,15 @@ export async function cancelBooking(
   }
   await batch.commit();
 
-  // Its "starts soon" notification would now be about nothing.
-  const pushId = (booking as { pushId?: unknown }).pushId;
+  // Its "starts soon" reminders would now be about nothing.
+  const { pushId, reminderId } = booking as { pushId?: unknown; reminderId?: unknown };
+  if (typeof reminderId === "string" && booking.startAt.toMillis() > Date.now()) {
+    const ownerEmail =
+      booking.uid === member.uid
+        ? member.email
+        : await emailOf(ctx, input.houseId, booking.uid);
+    await cancelScheduledEmail(reminderId, ownerEmail);
+  }
   if (typeof pushId === "string" && booking.startAt.toMillis() > Date.now()) {
     await cancelPush(
       pushId,
@@ -788,6 +834,17 @@ export async function pruneOldRecords(ctx: ServerContext, input: { houseId: stri
 }
 
 /* ------------------------------------------------------------------ notifications */
+
+/** A member's address, to check a scheduled email is theirs before calling it off. */
+async function emailOf(
+  ctx: ServerContext,
+  houseId: string,
+  uid: string,
+): Promise<string> {
+  if (!uid) return "";
+  const snap = await getDoc(memberDoc(ctx.db, houseId, uid)).catch(() => null);
+  return (snap?.data() as Member | undefined)?.email ?? "";
+}
 
 /** A stable id per browser, so subscribing twice updates one document. */
 function deviceId(endpoint: string): string {
@@ -876,20 +933,55 @@ export async function removePushDevice(ctx: ServerContext, input: { endpoint: st
 }
 
 /** Sends a notification right now to every device the caller has allowed. */
-export async function sendTestPush(ctx: ServerContext) {
-  if (!pushConfigured()) fail("Phone notifications are not set up on this server yet.");
-  const targets = await myPushTargets(ctx);
-  if (targets.length === 0) fail("Turn notifications on for this device first.");
-  const { sent, gone } = await sendPush(targets, {
-    title: "Notifications are on",
-    body: "You will hear from us when your laundry is done and before your bookings.",
-    tag: "test",
-    url: "/settings",
-  });
-  await forgetDevices(ctx, gone);
-  if (sent === 0)
-    fail("Could not reach your devices. Turn notifications off and on again.");
+/**
+ * Sends a notification right now to the browser asking, and only to it, so the result
+ * says something about this device rather than any of the person's devices. The
+ * subscription is saved again first, in case the browser replaced it since.
+ */
+export async function sendTestPush(
+  ctx: ServerContext,
+  input: { subscription: unknown; label: string },
+) {
+  await savePushDevice(ctx, input);
+  const target = input.subscription as PushTarget;
+  const { sent, gone, refused } = await sendPush(
+    [{ endpoint: target.endpoint, keys: target.keys }],
+    {
+      title: "Notifications are on",
+      body: "You will hear from us when your laundry is done and before your bookings.",
+      // Its own tag each time, so a test never silently replaces the last one.
+      tag: `test-${Date.now()}`,
+      url: "/settings",
+    },
+  );
+  if (gone.length > 0) {
+    await forgetDevices(ctx, gone);
+    fail(
+      "This browser's notification address has expired. Turn notifications off and on.",
+    );
+  }
+  if (sent === 0) {
+    fail(
+      `The push service refused it${refused[0] ? ` (status ${refused[0]})` : ""}. Turn notifications off and on, then try again.`,
+    );
+  }
   return { sent };
+}
+
+/** Emails the caller now, to check that reminders reach them. */
+export async function sendTestEmail(ctx: ServerContext, input: { houseId: string }) {
+  const { house, member } = await requireMember(ctx, input.houseId);
+  if (!remindersEnabled()) fail("Email is not set up on this server yet.");
+  if (house.emailReminders !== true) fail("Your house admin has email switched off.");
+  if (!member.email) fail("Your account has no email address to send to.");
+  const to = await deliverTestEmail({
+    to: member.email,
+    from: house.emailFrom,
+    displayName: member.displayName,
+    houseName: house.name,
+  });
+  if (!to) fail("The email service refused it. Check the sender address in settings.");
+  return { to };
 }
 
 /* ------------------------------------------------------------------ admin settings */
