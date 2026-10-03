@@ -11,9 +11,11 @@ import { Legend } from "@/components/schedule/phone-schedule";
 import { TimeGrid } from "@/components/schedule/time-grid";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMembers } from "@/hooks/use-house-data";
+import { textOn } from "@/lib/machine-color";
 import {
   addDays,
   formatDuration,
@@ -92,7 +94,7 @@ export function DesktopCalendar({
       <aside className="flex w-72 shrink-0 flex-col gap-5 overflow-y-auto pr-1 pb-2">
         <Button
           variant="outline"
-          className="h-14 self-start rounded-2xl px-6 text-base shadow-md"
+          className="h-14 w-full rounded-2xl text-base shadow-md"
           onClick={onBook}
         >
           <IconPlus className="size-5" />
@@ -103,7 +105,8 @@ export function DesktopCalendar({
 
         <Calendar
           mode="single"
-          className="-mx-2 p-0"
+          className="w-full p-0 [--cell-size:--spacing(8)]"
+          classNames={{ root: "w-full" }}
           selected={view === "day" ? first : undefined}
           disabled={{ before: today, after: new Date(latestBookingStart(now)) }}
           onSelect={(date) => {
@@ -269,13 +272,16 @@ function MachineRow({
   return (
     <div className="hover:bg-muted/50 rounded-lg px-1 py-1.5">
       <div className="flex min-h-10 items-center gap-2.5">
-        <input
+        <Checkbox
           id={id}
-          type="checkbox"
           checked={shown}
-          onChange={onToggle}
-          className="size-[18px] shrink-0 cursor-pointer"
-          style={{ accentColor: color }}
+          onCheckedChange={onToggle}
+          // Ticked, it takes the machine's colour, like a calendar in Google Calendar.
+          style={
+            shown
+              ? { backgroundColor: color, borderColor: color, color: textOn(color) }
+              : undefined
+          }
           aria-label={`Show ${machine.name} on the calendar`}
         />
         <label
@@ -288,7 +294,7 @@ function MachineRow({
       </div>
       <p
         className={cn(
-          "pl-7 text-xs leading-snug",
+          "pt-0.5 text-xs leading-snug",
           state === "free" && "text-emerald-700 dark:text-emerald-400",
           state === "running" && "text-red-700 dark:text-red-400",
           state === "finished" && "text-amber-700 dark:text-amber-400",
@@ -331,13 +337,11 @@ function People({
               key={p.uid}
               className="hover:bg-muted/50 flex min-h-11 items-center gap-2.5 rounded-lg px-1"
             >
-              <input
+              <Checkbox
                 id={id}
-                type="checkbox"
                 checked={!hidden.has(p.uid)}
                 disabled={you}
-                onChange={() => onToggle(p.uid)}
-                className="accent-primary size-[18px] shrink-0 cursor-pointer disabled:cursor-default"
+                onCheckedChange={() => onToggle(p.uid)}
                 aria-label={
                   you
                     ? "Your bookings always show"
