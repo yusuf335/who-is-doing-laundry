@@ -19,6 +19,7 @@ import {
 import { fail } from "@/lib/errors";
 import type { ServerContext } from "@/lib/firebase-server";
 import { generateInviteCode, normaliseInviteCode } from "@/lib/invite";
+import { DEFAULT_MACHINE_COLORS, normalizeHex } from "@/lib/machine-color";
 import {
   bookingDoc,
   bookingsCol,
@@ -42,6 +43,8 @@ import {
   MAX_BOOKING_MINUTES,
   SLOT_MINUTES,
   formatTime,
+  SERVER_MAX_AHEAD_MS,
+  MAX_DAYS_AHEAD,
   isValidTimeZone,
   slotIdsForRange,
   snapToSlot,
@@ -189,6 +192,7 @@ export async function createHouse(ctx: ServerContext, input: CreateHouseInput) {
       cycles: DEFAULT_CYCLES.washer,
       maxMinutes: DEFAULT_MAX_MINUTES.washer,
       order: 0,
+      color: DEFAULT_MACHINE_COLORS[0],
     });
     batch.set(doc(machinesCol(ctx.db, houseId)), {
       name: "Dryer",
@@ -198,6 +202,7 @@ export async function createHouse(ctx: ServerContext, input: CreateHouseInput) {
       cycles: DEFAULT_CYCLES.dryer,
       maxMinutes: DEFAULT_MAX_MINUTES.dryer,
       order: 1,
+      color: DEFAULT_MACHINE_COLORS[1],
     });
 
     try {
@@ -565,6 +570,9 @@ export async function createBooking(
     fail(`Bookings can be at most ${MAX_BOOKING_MINUTES / 60} hours long.`);
   }
   if (input.endMs <= Date.now()) fail("That slot is already in the past.");
+  if (input.startMs > Date.now() + SERVER_MAX_AHEAD_MS) {
+    fail(`Bookings open up to ${MAX_DAYS_AHEAD / 7} weeks ahead.`);
+  }
 
   // The day the booking starts on decides; it may run past midnight.
   const access = dayAccess(house, member, start);
@@ -572,6 +580,19 @@ export async function createBooking(
 
   const machine = await getDoc(machineDoc(ctx.db, input.houseId, input.machineId));
   if (!machine.exists()) fail("That machine no longer exists.");
+  // A running cycle is not a booking, so the slots below would not catch it.
+  const {
+    name: machineName,
+    status,
+    currentSession: running,
+  } = machine.data() as Machine;
+  if (
+    status === "in_use" &&
+    running &&
+    running.expectedEndAt.toMillis() > start.getTime()
+  ) {
+    fail(`${machineName} is in use until ${formatTime(running.expectedEndAt.toDate())}.`);
+  }
 
   const slotIds = slotIdsForRange(input.machineId, start, end);
   const bookingRef = doc(bookingsCol(ctx.db, input.houseId));
@@ -702,12 +723,13 @@ export async function pruneOldRecords(ctx: ServerContext, input: { houseId: stri
 
 export async function addMachine(
   ctx: ServerContext,
-  input: { houseId: string; name: string; type: MachineType },
+  input: { houseId: string; name: string; type: MachineType; color?: string },
 ) {
   await requireAdmin(ctx, input.houseId);
   const name = input.name.trim();
   if (!name) fail("Give the machine a name.");
   if (!MACHINE_TYPES.includes(input.type)) fail("Unknown machine type.");
+  const color = input.color === undefined ? null : cleanColor(input.color);
   // New machines go last; the admin can drag them elsewhere in settings.
   const existing = await getDocs(query(machinesCol(ctx.db, input.houseId), limit(50)));
   const order = existing.docs.reduce(
@@ -724,6 +746,7 @@ export async function addMachine(
     cycles: DEFAULT_CYCLES[input.type],
     maxMinutes: DEFAULT_MAX_MINUTES[input.type],
     order,
+    ...(color ? { color } : {}),
   });
   await batch.commit();
   return { machineId: ref.id };
@@ -797,6 +820,24 @@ export async function renameMachine(
   const name = input.name.trim();
   if (!name) fail("Give the machine a name.");
   await updateDoc(machineDoc(ctx.db, input.houseId, input.machineId), { name });
+}
+
+function cleanColor(value: string): string {
+  const color = typeof value === "string" ? normalizeHex(value) : null;
+  if (!color) fail("Pick a colour.");
+  return color;
+}
+
+/** The colour that tells this machine apart on the calendar. Any `#rrggbb` will do. */
+export async function setMachineColor(
+  ctx: ServerContext,
+  input: { houseId: string; machineId: string; color: string },
+) {
+  await requireAdmin(ctx, input.houseId);
+  const color = cleanColor(input.color);
+  const ref = machineDoc(ctx.db, input.houseId, input.machineId);
+  if (!(await getDoc(ref)).exists()) fail("That machine no longer exists.");
+  await updateDoc(ref, { color });
 }
 
 export async function removeMachine(

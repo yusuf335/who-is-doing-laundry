@@ -225,6 +225,11 @@ export interface Machine {
   maxMinutes?: number;
   /** Display position set by the admin. Missing on older documents; see `sortMachines`. */
   order?: number;
+  /**
+   * `#rrggbb` the admin picked, so machines are told apart on the calendar. Missing on
+   * older documents; `machineColors` fills in a default.
+   */
+  color?: string;
 }
 
 /**

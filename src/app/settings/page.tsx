@@ -70,6 +70,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { useJoinRequests, useMachines, useMembers } from "@/hooks/use-house-data";
 import { errorMessage } from "@/lib/errors";
+import { colorWarning, machineColors, suggestColor } from "@/lib/machine-color";
 import { scheduleModeOf } from "@/lib/schedule";
 import { deviceTimeZone } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -83,6 +84,7 @@ import {
   decideJoinRequestAction,
   leaveHouseAction,
   renameMachineAction,
+  setMachineColorAction,
   setEmailRemindersAction,
   setJoinApprovalAction,
   updateMachineCyclesAction,
@@ -815,19 +817,33 @@ function MachinesCard({
 }) {
   const [newName, setNewName] = useState("");
   const [newType, setNewType] = useState<MachineType>("washer");
+  // Null until the admin picks one, so the suggestion keeps up with the machine list.
+  const [pickedColor, setPickedColor] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const typeWarning = machineTypeWarning(newType, machines);
+  const colors = machineColors(machines);
+  const newColor = pickedColor ?? suggestColor(machines);
+  const newColorWarning = colorWarning(
+    newColor,
+    machines.map((m) => ({ name: m.name, color: colors[m.id] })),
+  );
 
   async function add(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
     try {
       await runAction(() =>
-        addMachineAction({ houseId: house.id, name: newName, type: newType }),
+        addMachineAction({
+          houseId: house.id,
+          name: newName,
+          type: newType,
+          color: newColor,
+        }),
       );
       toast.success(`${newName.trim()} added.`);
       setNewName("");
+      setPickedColor(null);
     } catch (error) {
       toast.error(errorMessage(error, "Could not add the machine."));
     } finally {
@@ -859,13 +875,20 @@ function MachinesCard({
           <Label htmlFor="new-machine">Add a machine</Label>
           <p className="text-muted-foreground text-xs">{MACHINE_RULE}</p>
           <div className="flex flex-col gap-2 sm:flex-row">
-            <Input
-              id="new-machine"
-              required
-              placeholder="e.g. Washer 2"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-            />
+            <div className="flex flex-1 gap-2">
+              <ColorSwatch
+                value={newColor}
+                onChange={setPickedColor}
+                label="Colour for the new machine"
+              />
+              <Input
+                id="new-machine"
+                required
+                placeholder="e.g. Washer 2"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+              />
+            </div>
             <Select value={newType} onValueChange={(v) => setNewType(v as MachineType)}>
               <SelectTrigger className="w-full sm:w-36" aria-label="Machine type">
                 <SelectValue />
@@ -884,7 +907,11 @@ function MachinesCard({
             </Button>
           </div>
 
-          <p className="text-muted-foreground text-xs">{MACHINE_TYPE_HINTS[newType]}</p>
+          <p className="text-muted-foreground text-xs">
+            {MACHINE_TYPE_HINTS[newType]} Tap the colour square to choose how it shows on
+            the calendar.
+          </p>
+          {newColorWarning && <ColorWarning text={newColorWarning} />}
 
           {typeWarning && (
             <Alert>
@@ -917,6 +944,7 @@ function SortableMachines({
     items: Machine[];
   } | null>(null);
   const items = optimistic?.source === machines ? optimistic.items : machines;
+  const colors = machineColors(machines);
 
   const sensors = useSensors(
     // A small activation distance keeps taps on the inputs from starting a drag.
@@ -953,9 +981,14 @@ function SortableMachines({
         <ul className="divide-y">
           {items.map((machine) => (
             <MachineRow
-              key={`${machine.id}|${machine.name}`}
+              // A saved rename or recolour resets the row's draft; a shifting default does not.
+              key={`${machine.id}|${machine.name}|${machine.color ?? ""}`}
               houseId={houseId}
               machine={machine}
+              color={colors[machine.id]}
+              others={items
+                .filter((m) => m.id !== machine.id)
+                .map((m) => ({ name: m.name, color: colors[m.id] }))}
             />
           ))}
         </ul>
@@ -964,7 +997,18 @@ function SortableMachines({
   );
 }
 
-function MachineRow({ houseId, machine }: { houseId: string; machine: Machine }) {
+function MachineRow({
+  houseId,
+  machine,
+  color: savedColor,
+  others,
+}: {
+  houseId: string;
+  machine: Machine;
+  /** The colour it shows in now, defaulted when the machine never had one. */
+  color: string;
+  others: { name: string; color: string }[];
+}) {
   const {
     attributes,
     listeners,
@@ -976,19 +1020,30 @@ function MachineRow({ houseId, machine }: { houseId: string; machine: Machine })
   } = useSortable({ id: machine.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
   const [name, setName] = useState(machine.name);
+  const [color, setColor] = useState(savedColor);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const renamed = name.trim() !== machine.name;
+  const recoloured = color !== savedColor;
+  const warning = recoloured ? colorWarning(color, others) : null;
 
-  async function rename(event: React.FormEvent) {
+  async function save(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
     try {
-      await runAction(() =>
-        renameMachineAction({ houseId, machineId: machine.id, name }),
-      );
-      toast.success("Machine renamed.");
+      if (renamed) {
+        await runAction(() =>
+          renameMachineAction({ houseId, machineId: machine.id, name }),
+        );
+      }
+      if (recoloured) {
+        await runAction(() =>
+          setMachineColorAction({ houseId, machineId: machine.id, color }),
+        );
+      }
+      toast.success(`${name.trim()} saved.`);
     } catch (error) {
-      toast.error(errorMessage(error, "Could not rename the machine."));
+      toast.error(errorMessage(error, "Could not save the machine."));
     } finally {
       setBusy(false);
     }
@@ -1013,7 +1068,7 @@ function MachineRow({ houseId, machine }: { houseId: string; machine: Machine })
       style={style}
       className={cn("bg-card py-3", isDragging && "relative z-10 opacity-80 shadow-lg")}
     >
-      <form className="flex items-center gap-2" onSubmit={rename}>
+      <form className="flex items-center gap-2" onSubmit={save}>
         <button
           ref={setActivatorNodeRef}
           type="button"
@@ -1024,6 +1079,11 @@ function MachineRow({ houseId, machine }: { houseId: string; machine: Machine })
         >
           <IconGripVertical className="size-5" />
         </button>
+        <ColorSwatch
+          value={color}
+          onChange={setColor}
+          label={`Colour of ${machine.name}`}
+        />
         <Input
           aria-label={`Name of ${machine.name}`}
           value={name}
@@ -1036,8 +1096,8 @@ function MachineRow({ houseId, machine }: { houseId: string; machine: Machine })
           type="submit"
           variant="outline"
           size="icon"
-          aria-label="Save name"
-          disabled={busy || !name.trim() || name.trim() === machine.name}
+          aria-label="Save name and colour"
+          disabled={busy || !name.trim() || (!renamed && !recoloured)}
         >
           <IconDeviceFloppy />
         </Button>
@@ -1055,6 +1115,8 @@ function MachineRow({ houseId, machine }: { houseId: string; machine: Machine })
         </Button>
       </form>
 
+      {warning && <ColorWarning text={warning} className="mt-2" />}
+
       <CyclesEditor houseId={houseId} machine={machine} />
 
       <ConfirmDialog
@@ -1067,6 +1129,50 @@ function MachineRow({ houseId, machine }: { houseId: string; machine: Machine })
         onConfirm={remove}
       />
     </li>
+  );
+}
+
+/**
+ * A square in the machine's colour that opens the device's own colour picker, so the
+ * admin can choose any colour at all. The input sits invisibly on top of the square.
+ */
+function ColorSwatch({
+  value,
+  onChange,
+  label,
+}: {
+  value: string;
+  onChange: (color: string) => void;
+  label: string;
+}) {
+  return (
+    <label
+      className="ring-foreground/15 focus-within:ring-ring relative size-11 shrink-0 cursor-pointer overflow-hidden rounded-lg ring-1 focus-within:ring-2"
+      style={{ backgroundColor: value }}
+      title={label}
+    >
+      <span className="sr-only">{label}</span>
+      <input
+        type="color"
+        value={value}
+        onChange={(e) => onChange(e.target.value.toLowerCase())}
+        className="absolute inset-0 size-full cursor-pointer opacity-0"
+      />
+    </label>
+  );
+}
+
+function ColorWarning({ text, className }: { text: string; className?: string }) {
+  return (
+    <p
+      role="status"
+      className={cn(
+        "rounded-md bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-800 dark:text-amber-300",
+        className,
+      )}
+    >
+      {text}
+    </p>
   );
 }
 

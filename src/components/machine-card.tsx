@@ -2,7 +2,6 @@
 
 import {
   IconCheck,
-  IconChevronRight,
   IconCircleCheck,
   IconHourglass,
   IconLock,
@@ -13,7 +12,6 @@ import {
 } from "@tabler/icons-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import { BookingList } from "@/components/booking-list";
 import { useHouse } from "@/components/providers/house-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,6 +29,7 @@ import { Label } from "@/components/ui/label";
 import { errorMessage } from "@/lib/errors";
 import { dayAccess } from "@/lib/schedule";
 import { runAction } from "@/lib/run-action";
+import { textOn } from "@/lib/machine-color";
 import { formatDuration, formatMinutes, formatTime, sameDay } from "@/lib/time";
 import {
   cyclesOf,
@@ -42,24 +41,143 @@ import {
 import { cn } from "@/lib/utils";
 import { endSessionAction, startSessionAction } from "@/server/actions";
 
-export function MachineCard({
+/** Why this member cannot start `machine` right now, or null when they can. */
+function startBlockReason(
+  access: ReturnType<typeof dayAccess>,
+  bookedNow: Booking | null,
+): string | null {
+  if (!access.allowed) return access.reason;
+  if (bookedNow) {
+    return `Booked by ${bookedNow.displayName} until ${formatTime(bookedNow.endAt.toDate())}.`;
+  }
+  return null;
+}
+
+/** Someone else's booking that covers this moment: starting now would take their slot. */
+function bookedNowBy(
+  machine: Machine,
+  bookings: Booking[],
+  uid: string | undefined,
+  now: number,
+): Booking | null {
+  return (
+    bookings.find(
+      (b) =>
+        b.machineId === machine.id &&
+        b.uid !== uid &&
+        b.startAt.toMillis() <= now &&
+        b.endAt.toMillis() > now,
+    ) ?? null
+  );
+}
+
+/**
+ * The one button a machine needs right now: Start when it is free, Done for your own
+ * cycle, Stop for someone else's (only once it has finished, or for the admin), and
+ * Emptied when the cycle is over. Shared by the phone cards and the desktop sidebar.
+ */
+export function MachineAction({
   machine,
   bookings,
   now,
+  className,
 }: {
   machine: Machine;
   bookings: Booking[];
   now: number;
+  className?: string;
 }) {
   const { houseId, house, member, isAdmin } = useHouse();
   const [startOpen, setStartOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [bookingsOpen, setBookingsOpen] = useState(false);
 
   const state = machineState(machine, now);
   const session = machine.currentSession;
   const mine = session?.uid === member?.uid;
   const canEnd = state === "finished" || mine || isAdmin;
+
+  // Strict schedule: the server refuses too; this just explains it before the tap.
+  const startReason = startBlockReason(
+    dayAccess(house, member, new Date(now)),
+    bookedNowBy(machine, bookings, member?.uid, now),
+  );
+
+  async function finish() {
+    if (!houseId || !member) return;
+    setBusy(true);
+    try {
+      await runAction(() => endSessionAction({ houseId, machineId: machine.id }));
+      toast.success(`${machine.name} is available again.`);
+    } catch (error) {
+      toast.error(errorMessage(error, "Could not finish the cycle."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      {state === "free" ? (
+        <Button
+          size="sm"
+          className={cn("h-9 shrink-0 px-3", className)}
+          disabled={startReason !== null}
+          title={startReason ?? undefined}
+          onClick={() => setStartOpen(true)}
+        >
+          {startReason ? <IconLock /> : <IconPlayerPlayFilled />}
+          Start
+        </Button>
+      ) : (
+        <Button
+          size="sm"
+          className={cn(
+            "h-9 shrink-0 px-3",
+            state === "finished" &&
+              "bg-amber-500 text-black hover:bg-amber-500/90 dark:bg-amber-400",
+            className,
+          )}
+          variant={state === "finished" || mine ? "default" : "outline"}
+          disabled={!canEnd || busy}
+          title={
+            !canEnd
+              ? `Only ${session?.displayName} can stop it before it finishes`
+              : undefined
+          }
+          onClick={finish}
+        >
+          <IconCheck />
+          {state === "finished" ? "Emptied" : mine ? "Done" : "Stop"}
+        </Button>
+      )}
+
+      <StartDialog
+        machine={machine}
+        bookings={bookings.filter((b) => b.machineId === machine.id)}
+        now={now}
+        open={startOpen}
+        onOpenChange={setStartOpen}
+      />
+    </>
+  );
+}
+
+export function MachineCard({
+  machine,
+  color,
+  bookings,
+  now,
+}: {
+  machine: Machine;
+  color: string;
+  bookings: Booking[];
+  now: number;
+}) {
+  const { house, member } = useHouse();
+
+  const state = machineState(machine, now);
+  const session = machine.currentSession;
+  const mine = session?.uid === member?.uid;
   const Icon = machine.type === "dryer" ? IconWind : IconWashMachine;
 
   // The preset the cycle length matches, so the row can say "Heavy" instead of "60 min".
@@ -84,71 +202,23 @@ export function MachineCard({
       )
     : 0;
 
-  const today = new Date(now);
-  const machineBookings = bookings.filter((b) => b.machineId === machine.id);
-  const todaysBookings = machineBookings.filter((b) =>
-    sameDay(b.startAt.toDate(), today),
+  const startReason = startBlockReason(
+    dayAccess(house, member, new Date(now)),
+    bookedNowBy(machine, bookings, member?.uid, now),
   );
 
-  // Someone else's booking that covers this moment: starting now would take their slot.
-  const bookedNow =
-    machineBookings.find(
-      (b) =>
-        b.uid !== member?.uid && b.startAt.toMillis() <= now && b.endAt.toMillis() > now,
-    ) ?? null;
-
-  async function finish() {
-    if (!houseId || !member) return;
-    setBusy(true);
-    try {
-      await runAction(() => endSessionAction({ houseId, machineId: machine.id }));
-      toast.success(`${machine.name} is available again.`);
-    } catch (error) {
-      toast.error(errorMessage(error, "Could not finish the cycle."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // Strict schedule: the server refuses too; this just explains it before the tap.
-  const access = dayAccess(house, member, new Date(now));
-
-  const startBlocked = !access.allowed || bookedNow !== null;
-  const startReason = !access.allowed
-    ? access.reason
-    : bookedNow
-      ? `Booked by ${bookedNow.displayName} until ${formatTime(bookedNow.endAt.toDate())}.`
+  // While it is free, say how long for: the next booking on it today, if any.
+  const nextBooking =
+    state === "free"
+      ? (bookings
+          .filter(
+            (b) =>
+              b.machineId === machine.id &&
+              b.startAt.toMillis() > now &&
+              sameDay(b.startAt.toDate(), new Date(now)),
+          )
+          .sort((a, b) => a.startAt.toMillis() - b.startAt.toMillis())[0] ?? null)
       : null;
-
-  const action =
-    state === "free" ? (
-      <Button
-        size="sm"
-        className="h-9 shrink-0 px-3"
-        disabled={startBlocked}
-        title={startReason ?? undefined}
-        onClick={() => setStartOpen(true)}
-      >
-        {startBlocked ? <IconLock /> : <IconPlayerPlayFilled />}
-        Start
-      </Button>
-    ) : (
-      <Button
-        size="sm"
-        className="h-9 shrink-0 px-3"
-        variant={state === "finished" || mine ? "default" : "outline"}
-        disabled={!canEnd || busy}
-        title={
-          !canEnd
-            ? `Only ${session?.displayName} can stop it before it finishes`
-            : undefined
-        }
-        onClick={finish}
-      >
-        <IconCheck />
-        {state === "finished" ? "Emptied" : mine ? "Done" : "Stop"}
-      </Button>
-    );
 
   return (
     <Card
@@ -161,17 +231,31 @@ export function MachineCard({
       )}
     >
       <CardHeader className="flex flex-row items-center gap-2">
-        <Icon className="text-muted-foreground size-5 shrink-0" aria-hidden />
+        <span
+          className="flex size-7 shrink-0 items-center justify-center rounded-md"
+          style={{ backgroundColor: color, color: textOn(color) }}
+          aria-hidden
+        >
+          <Icon className="size-4" />
+        </span>
         <CardTitle className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5 text-base leading-tight">
           <span className="truncate">{machine.name}</span>
           <StatusBadge state={state} />
         </CardTitle>
-        {action}
+        <MachineAction machine={machine} bookings={bookings} now={now} />
       </CardHeader>
 
-      {state === "free" && startReason && (
+      {state === "free" && (startReason || nextBooking) && (
         <CardContent>
-          <p className="text-muted-foreground text-xs">{startReason}</p>
+          <p className="text-muted-foreground text-xs">
+            {startReason ??
+              (nextBooking &&
+                `Free until ${formatTime(nextBooking.startAt.toDate())}, then ${
+                  nextBooking.uid === member?.uid
+                    ? "your booking"
+                    : nextBooking.displayName
+                }.`)}
+          </p>
         </CardContent>
       )}
 
@@ -226,48 +310,6 @@ export function MachineCard({
           </div>
         </CardContent>
       )}
-
-      {todaysBookings.length > 0 && (
-        <CardContent className="border-t pt-1 pb-0">
-          <button
-            type="button"
-            className="text-muted-foreground hover:text-foreground flex h-9 w-full items-center gap-1.5 text-[11px] font-medium tracking-wide uppercase"
-            aria-expanded={bookingsOpen}
-            aria-controls={`booked-today-${machine.id}`}
-            onClick={() => setBookingsOpen((open) => !open)}
-          >
-            <IconChevronRight
-              className={cn("size-3.5 transition-transform", bookingsOpen && "rotate-90")}
-              aria-hidden
-            />
-            Booked today
-            <Badge
-              variant="secondary"
-              className="h-4 min-w-4 px-1 text-[10px] tabular-nums"
-            >
-              {todaysBookings.length}
-            </Badge>
-          </button>
-          {bookingsOpen && (
-            <div id={`booked-today-${machine.id}`} className="pb-2">
-              <BookingList
-                bookings={todaysBookings}
-                machines={[machine]}
-                showMachine={false}
-                compact
-              />
-            </div>
-          )}
-        </CardContent>
-      )}
-
-      <StartDialog
-        machine={machine}
-        bookings={machineBookings}
-        now={now}
-        open={startOpen}
-        onOpenChange={setStartOpen}
-      />
     </Card>
   );
 }

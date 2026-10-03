@@ -138,10 +138,17 @@ service cloud.firestore {
       match /machines/{machineId} {
         allow get: if isMember(houseId);
         allow list: if isMember(houseId) && boundedList();
-        allow create: if isAdminAfter(houseId);
+        allow create: if isAdminAfter(houseId) && validColor();
         allow delete: if isAdmin(houseId);
-        allow update: if isAdmin(houseId)
+        allow update: if (isAdmin(houseId) && validColor())
           || (isMember(houseId) && (startingSession() || endingSession()));
+
+        // Optional, but when present it is a plain #rrggbb so the UI can paint it as-is.
+        function validColor() {
+          return !('color' in request.resource.data)
+            || (request.resource.data.color is string
+              && request.resource.data.color.matches('^#[0-9a-fA-F]{6}$'));
+        }
 
         // Claiming a free machine for yourself.
         function startingSession() {
@@ -205,7 +212,10 @@ service cloud.firestore {
           && request.resource.data.startAt.toMillis() % 900000 == 0
           && request.resource.data.endAt.toMillis() % 900000 == 0
           && request.resource.data.endAt.toMillis() - request.resource.data.startAt.toMillis() <= 21600000
-          && request.resource.data.endAt > request.time;
+          && request.resource.data.endAt > request.time
+          // Two weeks ahead in whole days (MAX_DAYS_AHEAD); a day's slack for time zones,
+          // the same as the server.
+          && request.resource.data.startAt <= request.time + duration.value(15, 'd');
         // Edits go through cancel + rebook so the slot locks always match the booking.
         allow update: if false;
         // Owners and the admin cancel; anyone may sweep a booking whose time has passed,

@@ -29,8 +29,7 @@ import {
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { href: "/", label: "Now", icon: IconWashMachine },
-  { href: "/bookings", label: "Bookings", icon: IconCalendarEvent },
+  { href: "/", label: "Today", icon: IconCalendarEvent },
   { href: "/history", label: "History", icon: IconHistory },
   { href: "/settings", label: "Settings", icon: IconSettings },
 ] as const;
@@ -77,11 +76,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { house, member, isAdmin } = useHouse();
 
   const nav = NAV;
+  // The calendar wants the whole screen on a desktop; everything else reads better narrow.
+  const wide = pathname === "/";
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
       <header className="bg-background/85 sticky top-0 z-30 border-b backdrop-blur">
-        <div className="mx-auto flex w-full max-w-3xl items-center gap-2 px-4 py-3">
+        <div
+          className={cn(
+            "mx-auto flex w-full max-w-3xl items-center gap-2 px-4 py-3",
+            wide && "lg:max-w-none lg:px-6",
+          )}
+        >
           <IconWashMachine className="text-primary size-5 shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">{house?.name ?? "Laundry"}</p>
@@ -149,7 +155,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-3xl flex-1 space-y-3 px-4 pt-4 pb-24 md:pb-10">
+      <main
+        className={cn(
+          "mx-auto w-full max-w-3xl flex-1 space-y-3 px-4 pt-4 pb-24 md:pb-10",
+          wide && "lg:max-w-none lg:px-6 lg:pb-6",
+        )}
+      >
         {children}
       </main>
 

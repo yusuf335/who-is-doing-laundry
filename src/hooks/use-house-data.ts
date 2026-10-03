@@ -14,7 +14,7 @@ import {
   membersCol,
   sessionsCol,
 } from "@/lib/paths";
-import { startOfDay } from "@/lib/time";
+import { MAX_BOOKING_MINUTES, startOfDay } from "@/lib/time";
 import {
   sortMachines,
   type Booking,
@@ -48,7 +48,11 @@ export function useMembers() {
   );
 }
 
-/** Everything from midnight today onwards, enough for "today" and the week ahead. */
+/**
+ * Everything from midnight today onwards, enough for "today" and the week ahead. It
+ * reaches back by the longest booking, so one that began last night and runs past
+ * midnight still shows (and still blocks) its morning hours.
+ */
 export function useUpcomingBookings() {
   const { houseId } = useHouse();
   // Only changes at midnight, so a phone left open overnight re-queries for the new day.
@@ -57,7 +61,7 @@ export function useUpcomingBookings() {
     if (!houseId) return null;
     return query(
       bookingsCol(db, houseId),
-      where("startAt", ">=", Timestamp.fromMillis(dayKey)),
+      where("startAt", ">=", Timestamp.fromMillis(dayKey - MAX_BOOKING_MINUTES * 60_000)),
       orderBy("startAt"),
       limit(200),
     );

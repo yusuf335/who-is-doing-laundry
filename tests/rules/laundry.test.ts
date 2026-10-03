@@ -33,6 +33,7 @@ import {
   reorderMachines,
   removeMember,
   renameMachine,
+  setMachineColor,
   setJoinApproval,
   startSession,
   updateHouseDetails,
@@ -60,6 +61,7 @@ import type {
   Weekday,
 } from "@/lib/types";
 import { DEFAULT_CYCLES, DEFAULT_MAX_MINUTES, WEEKDAYS } from "@/lib/types";
+import { DEFAULT_MACHINE_COLORS } from "@/lib/machine-color";
 
 // Every context is a rules-enforced Firestore signed in as that uid, so each test proves
 // both that the logic does the right thing and that firestore.rules lets it.
@@ -275,11 +277,13 @@ describe("createHouse", () => {
       cycles: DEFAULT_CYCLES.washer,
       maxMinutes: DEFAULT_MAX_MINUTES.washer,
       order: 0,
+      color: DEFAULT_MACHINE_COLORS[0],
     });
     expect(dryer).toMatchObject({
       cycles: DEFAULT_CYCLES.dryer,
       maxMinutes: DEFAULT_MAX_MINUTES.dryer,
       order: 1,
+      color: DEFAULT_MACHINE_COLORS[1],
     });
   });
 
@@ -1415,6 +1419,97 @@ describe("machines admin", () => {
   });
 });
 type MachineTypeLoose = "washer" | "dryer";
+
+describe("booking horizon", () => {
+  it("refuses a booking that starts more than two weeks ahead", async () => {
+    const { houseId, washerId } = await setupHouse();
+    const slot = 15 * 60_000;
+    const day = 24 * 60 * 60_000;
+    const tooFar = Math.ceil((Date.now() + 16 * day) / slot) * slot;
+    await expectLaundryError(
+      createBooking(member(), {
+        houseId,
+        machineId: washerId,
+        startMs: tooFar,
+        endMs: tooFar + slot,
+      }),
+      "up to 2 weeks ahead",
+    );
+    const inRange = Math.ceil((Date.now() + 13 * day) / slot) * slot;
+    await expect(
+      createBooking(member(), {
+        houseId,
+        machineId: washerId,
+        startMs: inRange,
+        endMs: inRange + slot,
+      }),
+    ).resolves.toBeDefined();
+  });
+});
+
+describe("booking a running machine", () => {
+  it("refuses a booking that starts before the running cycle ends", async () => {
+    const { houseId, washerId } = await setupHouse();
+    await startSession(member(), { houseId, machineId: washerId, minutes: 60 });
+    const slot = 15 * 60_000;
+    const startMs = Math.ceil(Date.now() / slot) * slot;
+    await expectLaundryError(
+      createBooking(admin(), {
+        houseId,
+        machineId: washerId,
+        startMs,
+        endMs: startMs + slot,
+      }),
+      "is in use until",
+    );
+    // After the cycle is due to end, the machine is bookable again.
+    const later = startMs + 2 * 60 * 60_000;
+    await expect(
+      createBooking(admin(), {
+        houseId,
+        machineId: washerId,
+        startMs: later,
+        endMs: later + slot,
+      }),
+    ).resolves.toBeDefined();
+  });
+});
+
+describe("machine colours", () => {
+  it("stores any hex colour, normalised, on add and on change", async () => {
+    const { houseId, washerId } = await setupHouse();
+    const { machineId } = await addMachine(admin(), {
+      houseId,
+      name: "Dryer 2",
+      type: "dryer",
+      color: "12AB9F",
+    });
+    expect((await readMachine(houseId, machineId))!.color).toBe("#12ab9f");
+
+    await setMachineColor(admin(), { houseId, machineId: washerId, color: "#FDE047" });
+    expect((await readMachine(houseId, washerId))!.color).toBe("#fde047");
+  });
+
+  it("refuses something that is not a colour, and non-admins", async () => {
+    const { houseId, washerId } = await setupHouse();
+    await expectLaundryError(
+      setMachineColor(admin(), { houseId, machineId: washerId, color: "red" }),
+      "Pick a colour",
+    );
+    await expectLaundryError(
+      addMachine(admin(), { houseId, name: "X", type: "washer", color: "#12" }),
+      "Pick a colour",
+    );
+    await expectLaundryError(
+      setMachineColor(member(), { houseId, machineId: washerId, color: "#123456" }),
+      "Only the house admin",
+    );
+    await expectLaundryError(
+      setMachineColor(admin(), { houseId, machineId: "gone", color: "#123456" }),
+      "no longer exists",
+    );
+  });
+});
 
 describe("updateMachineCycles", () => {
   it("stores trimmed names and the custom limit", async () => {

@@ -1,45 +1,78 @@
 "use client";
 
 import {
-  IconCalendarEvent,
-  IconChevronRight,
   IconCloudOff,
   IconRefresh,
   IconSettings,
   IconWashMachine,
 } from "@tabler/icons-react";
 import Link from "next/link";
-import { useEffect } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { LoadError } from "@/components/load-error";
 import { MachineCard } from "@/components/machine-card";
 import { useHouse } from "@/components/providers/house-provider";
 import { RequireHouse } from "@/components/require-house";
 import { ScheduleBanner } from "@/components/schedule-banner";
+import { BookingFlow, type FlowState } from "@/components/schedule/booking-flow";
+import { DesktopCalendar } from "@/components/schedule/desktop-calendar";
+import { MyBookings } from "@/components/schedule/my-bookings";
+import { PhoneSchedule } from "@/components/schedule/phone-schedule";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMachines, useUpcomingBookings } from "@/hooks/use-house-data";
+import { DESKTOP_QUERY, useMediaQuery } from "@/hooks/use-media-query";
 import { useNow } from "@/hooks/use-now";
+import { machineColors } from "@/lib/machine-color";
 import { runAction } from "@/lib/run-action";
 import { formatDayAndTime } from "@/lib/time";
+import type { Booking, Machine } from "@/lib/types";
+import { sessionBlocks } from "@/lib/week";
 import { pruneOldRecordsAction } from "@/server/actions";
 
-export default function DashboardPage() {
+export default function TodayPage() {
   return (
     <RequireHouse>
-      <Dashboard />
+      <Today />
     </RequireHouse>
   );
 }
 
-function Dashboard() {
-  const { houseId, isAdmin } = useHouse();
+/**
+ * What the machines are doing now and who has booked what, on one screen. Phones get
+ * the machine cards over a three-day calendar; wide screens get a Google Calendar style
+ * layout. Both open the same booking sheet.
+ */
+function Today() {
+  const { houseId } = useHouse();
   const machines = useMachines();
-
   const bookings = useUpcomingBookings();
   const now = useNow(1000);
+  // The calendar only needs the minute; keeping it steady between ticks lets it skip
+  // re-rendering every second while the countdowns above it run.
+  const minuteNow = Math.floor(now / 60_000) * 60_000;
+  const colors = useMemo(() => machineColors(machines.data), [machines.data]);
+  // Running cycles sit on the calendar next to the bookings, so their time never looks free.
+  const calendarBookings = useMemo(
+    () => [...bookings.data, ...sessionBlocks(machines.data, minuteNow)],
+    [bookings.data, machines.data, minuteNow],
+  );
+  const [flow, setFlow] = useState<FlowState>(null);
+  // Only one layout is mounted, so a phone never opens the desktop's extra listeners.
+  // Before hydration both are in the HTML and CSS picks; afterwards this decides.
+  const desktop = useMediaQuery(DESKTOP_QUERY);
 
-  const upcoming = bookings.data.filter((b) => b.endAt.toMillis() > now);
+  const pickGap = useCallback(
+    (machine: Machine, start: Date) =>
+      setFlow({ step: "book", machineId: machine.id, start }),
+    [],
+  );
+  const openBooking = useCallback(
+    (booking: Booking) => setFlow({ step: "details", bookingId: booking.id }),
+    [],
+  );
+  const book = useCallback(() => setFlow({ step: "choose" }), []);
+
   const hasExpired = bookings.data.some((b) => b.endAt.toMillis() <= now);
 
   // Sweeping costs up to 30 reads, so it runs when there is visibly something to clear,
@@ -55,75 +88,115 @@ function Dashboard() {
     });
   }, [houseId, bookings.loading, hasExpired]);
 
-  return (
-    <div className="space-y-3">
-      <ScheduleBanner date={new Date(now)} />
+  const calendar = {
+    machines: machines.data,
+    colors,
+    bookings: calendarBookings,
+    loading: bookings.loading,
+    onPickGap: pickGap,
+    onOpenBooking: openBooking,
+    onBook: book,
+  };
+  const ready = !machines.loading && !machines.error && machines.data.length > 0;
 
-      {machines.loading ? (
-        <>
-          <MachineSkeleton />
-          <MachineSkeleton />
-        </>
-      ) : machines.error ? (
-        <Card size="sm">
-          <CardContent>
-            <LoadError what="the machines" />
-          </CardContent>
-        </Card>
-      ) : machines.data.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 py-8 text-center">
-            <IconWashMachine className="text-muted-foreground size-8" />
-            <p className="text-sm font-medium">No machines yet</p>
-            <p className="text-muted-foreground text-sm">
-              {isAdmin
-                ? "Add a washer or dryer in settings to get started."
-                : "Ask your house admin to add a machine in settings."}
-            </p>
-            {isAdmin && (
-              <Button asChild size="lg">
-                <Link href="/settings">
-                  <IconSettings />
-                  Open settings
-                </Link>
-              </Button>
-            )}
-          </CardContent>
-        </Card>
-      ) : (
-        machines.data.map((machine) => (
-          <MachineCard
-            key={machine.id}
-            machine={machine}
-            bookings={bookings.data}
+  return (
+    <>
+      {!desktop && (
+        <div className="space-y-3 lg:hidden">
+          <ScheduleBanner date={new Date(now)} />
+
+          {machines.loading ? (
+            <>
+              <MachineSkeleton />
+              <MachineSkeleton />
+            </>
+          ) : machines.error ? (
+            <Card size="sm">
+              <CardContent>
+                <LoadError what="the machines" />
+              </CardContent>
+            </Card>
+          ) : machines.data.length === 0 ? (
+            <NoMachines />
+          ) : (
+            machines.data.map((machine) => (
+              <MachineCard
+                key={machine.id}
+                machine={machine}
+                color={colors[machine.id]}
+                bookings={bookings.data}
+                now={now}
+              />
+            ))
+          )}
+
+          {ready && <PhoneSchedule {...calendar} now={minuteNow} />}
+          {bookings.error && <LoadError what="the bookings" />}
+          {ready && (
+            <MyBookings
+              bookings={bookings.data}
+              machines={machines.data}
+              colors={colors}
+              now={minuteNow}
+              onOpen={openBooking}
+            />
+          )}
+
+          <FreshnessLine
+            updatedAt={machines.updatedAt}
+            fromCache={machines.fromCache}
             now={now}
           />
-        ))
+        </div>
       )}
 
-      <FreshnessLine
-        updatedAt={machines.updatedAt}
-        fromCache={machines.fromCache}
-        now={now}
-      />
+      <div className="hidden lg:block">
+        {machines.loading || !desktop ? (
+          <Skeleton className="h-[calc(100svh-6.5rem)] w-full rounded-2xl" />
+        ) : machines.error ? (
+          <LoadError what="the machines" />
+        ) : machines.data.length === 0 ? (
+          <NoMachines />
+        ) : (
+          <DesktopCalendar {...calendar} now={now} />
+        )}
+        {bookings.error && <LoadError what="the bookings" />}
+      </div>
 
-      <Button
-        asChild
-        variant="ghost"
-        className="text-muted-foreground h-11 w-full justify-between"
-      >
-        <Link href="/bookings">
-          <span className="flex items-center gap-2">
-            <IconCalendarEvent />
-            Bookings
-          </span>
-          <span className="flex items-center gap-1 text-xs">
-            {upcoming.length > 0 ? `${upcoming.length} upcoming` : "Nothing booked"}
-            <IconChevronRight className="size-4" />
-          </span>
-        </Link>
-      </Button>
-    </div>
+      <BookingFlow
+        state={flow}
+        onStateChange={setFlow}
+        machines={machines.data}
+        colors={colors}
+        bookings={calendarBookings}
+        now={minuteNow}
+      />
+    </>
+  );
+}
+
+function NoMachines() {
+  const { isAdmin } = useHouse();
+  return (
+    <Card>
+      <CardContent className="flex flex-col items-center gap-3 py-8 text-center">
+        <IconWashMachine className="text-muted-foreground size-8" />
+        <p className="text-sm font-medium">No machines yet</p>
+        <p className="text-muted-foreground text-sm">
+          {isAdmin
+            ? "Add a washer or dryer in settings to get started."
+            : "Ask your house admin to add a machine in settings."}
+        </p>
+        {isAdmin && (
+          <Button asChild size="lg">
+            <Link href="/settings">
+              <IconSettings />
+              Open settings
+            </Link>
+          </Button>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

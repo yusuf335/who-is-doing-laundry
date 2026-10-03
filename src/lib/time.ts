@@ -4,6 +4,22 @@ import { WEEKDAY_BY_DATE_INDEX, type Weekday } from "@/lib/types";
 export const SLOT_MINUTES = 15;
 const SLOT_MS = SLOT_MINUTES * 60_000;
 export const MAX_BOOKING_MINUTES = 6 * 60;
+/**
+ * How far ahead a booking may start, in whole days: today plus this many more. Keeps
+ * the fortnight ahead fair for everyone.
+ */
+export const MAX_DAYS_AHEAD = 14;
+
+/** The latest moment a booking made at `now` may start: the end of the last open day. */
+export function latestBookingStart(now: number): number {
+  return addDays(startOfDay(new Date(now)), MAX_DAYS_AHEAD + 1).getTime() - 1;
+}
+
+/**
+ * The server's version of the limit. It runs in UTC and cannot know where the house's
+ * midnight falls, so it allows one extra day; the app holds people to whole days.
+ */
+export const SERVER_MAX_AHEAD_MS = (MAX_DAYS_AHEAD + 1) * 24 * 60 * 60_000;
 
 /**
  * The weekday `date` falls on. With a time zone, the answer is for that zone (the house's),

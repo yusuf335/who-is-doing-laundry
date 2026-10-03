@@ -645,6 +645,19 @@ describe("machines", () => {
     await assertSucceeds(deleteDoc(doc(dbAs(ADMIN), `${housePath}/machines/dryer`)));
   });
 
+  it("only stores a machine colour that is a #rrggbb hex", async () => {
+    await assertSucceeds(updateDoc(doc(dbAs(ADMIN), machinePath), { color: "#7c3aed" }));
+    await assertFails(updateDoc(doc(dbAs(ADMIN), machinePath), { color: "red" }));
+    await assertFails(updateDoc(doc(dbAs(ADMIN), machinePath), { color: "#7c3aed; x" }));
+    await assertFails(updateDoc(doc(dbAs(MEMBER), machinePath), { color: "#7c3aed" }));
+    await assertFails(
+      setDoc(doc(dbAs(ADMIN), `${housePath}/machines/dryer`), {
+        ...freeMachine(),
+        color: "url(x)",
+      }),
+    );
+  });
+
   it("lets members read machines", async () => {
     await assertSucceeds(
       getDocs(query(collection(dbAs(MEMBER), `${housePath}/machines`), limit(200))),

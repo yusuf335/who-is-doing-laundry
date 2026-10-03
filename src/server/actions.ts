@@ -96,6 +96,7 @@ export async function addMachineAction(input: {
   houseId: string;
   name: string;
   type: MachineType;
+  color?: string;
 }) {
   return act((ctx) => laundry.addMachine(ctx, input));
 }
@@ -106,6 +107,14 @@ export async function renameMachineAction(input: {
   name: string;
 }) {
   return act((ctx) => laundry.renameMachine(ctx, input));
+}
+
+export async function setMachineColorAction(input: {
+  houseId: string;
+  machineId: string;
+  color: string;
+}) {
+  return act((ctx) => laundry.setMachineColor(ctx, input));
 }
 
 export async function removeMachineAction(input: { houseId: string; machineId: string }) {
