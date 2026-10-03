@@ -32,7 +32,7 @@ import {
   IconUsers,
   IconWashMachine,
 } from "@tabler/icons-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { useHouse } from "@/components/providers/house-provider";
 import { LoadError } from "@/components/load-error";
@@ -584,6 +584,11 @@ function HouseDetailsCard({ house }: { house: House }) {
   );
 }
 
+/** Nothing to subscribe to: being in the browser does not change. */
+function subscribeNever() {
+  return () => undefined;
+}
+
 /** "MDT · 4:32 PM": what the zone is called right now and its local time. */
 function zoneNow(zone: string, now: Date): string {
   try {
@@ -615,6 +620,11 @@ function TimeZoneCard({ house }: { house: House }) {
   const device = deviceTimeZone();
   const [busy, setBusy] = useState(false);
   const now = new Date(useNow(60_000));
+  const inBrowser = useSyncExternalStore(
+    subscribeNever,
+    () => true,
+    () => false,
+  );
   const zones = useMemo(() => {
     const all =
       typeof Intl.supportedValuesOf === "function"
@@ -668,10 +678,14 @@ function TimeZoneCard({ house }: { house: House }) {
             ))}
           </SelectContent>
         </Select>
-        <p className="text-muted-foreground text-xs tabular-nums">
-          It is {zoneNow(current, now).split(" · ")[1] ?? ""} in the house now (
-          {zoneNow(current, now).split(" · ")[0]}).
-        </p>
+        {/* Browser-only: Node and the browser format "4:49 PM" with different spaces,
+            so a server-rendered time would not match and React would complain. */}
+        {inBrowser && (
+          <p className="text-muted-foreground text-xs tabular-nums">
+            It is {zoneNow(current, now).split(" · ")[1] ?? ""} in the house now (
+            {zoneNow(current, now).split(" · ")[0]}).
+          </p>
+        )}
         {device !== current && (
           <Button
             variant="outline"

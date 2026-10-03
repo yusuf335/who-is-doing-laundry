@@ -10,11 +10,11 @@ import {
   IconSun,
   IconWashMachine,
 } from "@tabler/icons-react";
-import { useTheme } from "next-themes";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useSyncExternalStore } from "react";
 import { useAuth } from "@/components/providers/auth-provider";
+import { useTheme } from "@/components/providers/theme-provider";
 import { useRestorePush } from "@/hooks/use-restore-push";
 import { useHouse } from "@/components/providers/house-provider";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";

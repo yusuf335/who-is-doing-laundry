@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { AuthProvider } from "@/components/providers/auth-provider";
 import { HouseProvider } from "@/components/providers/house-provider";
 import { ThemeProvider } from "@/components/providers/theme-provider";
+import { THEME_SCRIPT } from "@/lib/theme";
 import { Toaster } from "@/components/ui/sonner";
 import { getServerSession } from "@/lib/firebase-server";
 import "./globals.css";
@@ -36,6 +37,11 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
       suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        {/* Sets light or dark before the first paint, so there is no flash of white. It
+            runs as the browser reads the page; this server layout never re-renders it. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+      </head>
       <body className="bg-background text-foreground flex min-h-full flex-col">
         <ThemeProvider>
           <AuthProvider initialUser={session.user}>

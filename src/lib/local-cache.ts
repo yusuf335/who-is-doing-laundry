@@ -1,6 +1,7 @@
 "use client";
 
 import { clearIndexedDbPersistence, terminate, type Firestore } from "firebase/firestore";
+import { THEME_KEY } from "@/lib/theme";
 
 /**
  * Firestore's offline cache is keyed by `firestore/{appName}/{projectId}/{database}`, so
@@ -93,8 +94,11 @@ export function hasLeftoverAccount(): boolean {
  */
 export async function clearAccountData(db: Firestore): Promise<void> {
   try {
+    // The light or dark choice belongs to the device, not the account: keep it.
+    const theme = localStorage.getItem(THEME_KEY);
     localStorage.clear();
     sessionStorage.clear();
+    if (theme) localStorage.setItem(THEME_KEY, theme);
   } catch {
     // Storage blocked: there was nothing in it to leave behind.
   }
