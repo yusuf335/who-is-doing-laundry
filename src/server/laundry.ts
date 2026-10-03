@@ -823,7 +823,6 @@ async function scheduleBookingNotifications(
   },
 ): Promise<boolean> {
   const { house, member, bookingId, machineName, start, end } = input;
-  const label = bookingLabel(bookingId);
   const emailOn =
     remindersEnabled() && house.emailReminders === true && member.emailReminders === true;
   const targets = schedulingConfigured() ? await myPushTargets(ctx).catch(() => []) : [];
@@ -848,6 +847,61 @@ async function scheduleBookingNotifications(
       return false;
     });
   if (!claimed) return false;
+
+  const pushes = scheduleBookingPushes({ ...input, targets, emailOn });
+
+  const [reminderId, ...pushIds] = await Promise.all([
+    emailOn && remindAt
+      ? scheduleBookingReminder(
+          {
+            to: member.email,
+            from: house.emailFrom,
+            displayName: member.displayName,
+            machineName,
+            houseName: house.name,
+            startsAt: start,
+            endsAt: end,
+            timeZone: house.timeZone,
+            accent: input.machineColor,
+          },
+          remindAt,
+        )
+      : Promise.resolve(null),
+    pushes,
+  ]);
+
+  // The email's id, so it can be called off if the booking is cancelled.
+  if (reminderId) {
+    await updateDoc(bookingDoc(ctx.db, house.id, bookingId), { reminderId }).catch(
+      (error: unknown) => console.error("store reminder id", error),
+    );
+  }
+  return Boolean(reminderId) || pushIds.flat().some(Boolean);
+}
+
+/**
+ * The QStash half of a booking's notifications: "in 15 minutes", the start nudges and
+ * the release notice (which carries the release email). Kept apart from the Resend
+ * email so it can be redone for a new device without emailing anyone twice.
+ */
+async function scheduleBookingPushes(input: {
+  house: House;
+  member: Member;
+  bookingId: string;
+  machineName: string;
+  machineColor?: string;
+  start: Date;
+  end: Date;
+  targets: PushTarget[];
+  emailOn: boolean;
+}): Promise<(string | null)[]> {
+  const { house, member, bookingId, machineName, start, end, targets, emailOn } = input;
+  if (!schedulingConfigured()) return [];
+  const label = bookingLabel(bookingId);
+  const at = (minutes: number) => new Date(start.getTime() + minutes * 60_000);
+  const due = (when: Date) => when.getTime() > Date.now() + 30_000;
+  const releasedAt = at(NO_SHOW_MINUTES);
+  const remindAt = bookingReminderAt(start.getTime(), Date.now());
 
   const releaseEmail =
     emailOn && schedulingConfigured() && due(releasedAt)
@@ -920,33 +974,56 @@ async function scheduleBookingNotifications(
     );
   }
 
-  const [reminderId, ...pushIds] = await Promise.all([
-    emailOn && remindAt
-      ? scheduleBookingReminder(
-          {
-            to: member.email,
-            from: house.emailFrom,
-            displayName: member.displayName,
-            machineName,
-            houseName: house.name,
-            startsAt: start,
-            endsAt: end,
-            timeZone: house.timeZone,
-            accent: input.machineColor,
-          },
-          remindAt,
-        )
-      : Promise.resolve(null),
-    ...pushes,
-  ]);
+  return Promise.all(pushes);
+}
 
-  // The email's id, so it can be called off if the booking is cancelled.
-  if (reminderId) {
-    await updateDoc(bookingDoc(ctx.db, house.id, bookingId), { reminderId }).catch(
-      (error: unknown) => console.error("store reminder id", error),
+/**
+ * Re-schedules the phone notifications for the caller's upcoming bookings so that a
+ * device just added hears about them too: each message carries the devices it goes
+ * to, fixed when it was scheduled. The booking's label cancels the old ones first, so
+ * nothing is sent twice. The Resend email is left alone.
+ */
+async function resyncMyBookingPushes(ctx: ServerContext, houseId: string): Promise<void> {
+  if (!schedulingConfigured()) return;
+  const { house, member } = await requireMember(ctx, houseId);
+  const targets = await myPushTargets(ctx);
+  if (targets.length === 0) return;
+  const now = Date.now();
+  const mine = await getDocs(
+    query(bookingsCol(ctx.db, houseId), where("uid", "==", member.uid), limit(50)),
+  );
+  const upcoming = mine.docs.filter((snap) => {
+    const booking = snap.data() as Omit<Booking, "id"> & { scheduled?: boolean };
+    return (
+      booking.scheduled === true &&
+      booking.endAt.toMillis() > now &&
+      !booking.checkedInAt &&
+      !isNoShow(booking, now)
     );
+  });
+  if (upcoming.length === 0) return;
+  const machines = await getDocs(query(machinesCol(ctx.db, houseId), limit(50)));
+  const machineById = new Map(machines.docs.map((d) => [d.id, d.data() as Machine]));
+  const emailOn =
+    remindersEnabled() && house.emailReminders === true && member.emailReminders === true;
+
+  for (const snap of upcoming) {
+    const booking = snap.data() as Omit<Booking, "id">;
+    const machine = machineById.get(booking.machineId);
+    if (!machine) continue;
+    await cancelLabelled(bookingLabel(snap.id));
+    await scheduleBookingPushes({
+      house,
+      member,
+      bookingId: snap.id,
+      machineName: machine.name,
+      machineColor: machine.color,
+      start: booking.startAt.toDate(),
+      end: booking.endAt.toDate(),
+      targets,
+      emailOn,
+    });
   }
-  return Boolean(reminderId) || pushIds.some(Boolean);
 }
 
 /**
@@ -1353,12 +1430,25 @@ export async function savePushDevice(
       `Notifications are on for ${MAX_PUSH_DEVICES} devices already. Turn them off on one you no longer use.`,
     );
   }
+  const isNew = !existing.docs.some((d) => d.id === id);
   await setDoc(pushDeviceDoc(ctx.db, ctx.user.uid, id), {
     endpoint,
     keys: { p256dh: keys.p256dh, auth: keys.auth },
     label,
     createdAt: Timestamp.now(),
   });
+
+  // A device just added: the notifications already scheduled for this person's
+  // bookings were addressed before it existed, so they are redone to include it.
+  if (isNew) {
+    const pointer = await getDoc(userDoc(ctx.db, ctx.user.uid)).catch(() => null);
+    const houseId = pointer?.data()?.houseId as string | undefined;
+    if (houseId) {
+      await resyncMyBookingPushes(ctx, houseId).catch((error: unknown) =>
+        console.error("resync booking pushes", error),
+      );
+    }
+  }
 }
 
 /** Forgets this browser, so nothing more is sent to it. */
