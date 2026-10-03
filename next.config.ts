@@ -6,6 +6,13 @@ const FIREBASE_AUTH_HOST = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID
 
 const nextConfig: NextConfig = {
   /**
+   * Loaded by Node at run time rather than bundled. React Email's renderer pulls in
+   * prettier through a top-level await, which the server bundle cannot hold, and the
+   * build fails while collecting page data.
+   */
+  serverExternalPackages: ["@react-email/render", "@react-email/components", "prettier"],
+
+  /**
    * Serve Firebase's sign-in helper from this app's own origin.
    *
    * Firebase normally hosts it on `<project>.firebaseapp.com`, which is a different site
