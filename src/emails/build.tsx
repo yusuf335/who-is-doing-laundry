@@ -1,6 +1,8 @@
 import { render } from "@react-email/render";
+import BookingReleased from "@/emails/booking-released";
 import BookingSoon from "@/emails/booking-soon";
 import CycleDone from "@/emails/cycle-done";
+import Emptied from "@/emails/emptied";
 import TestEmail from "@/emails/test-email";
 import { BOOKING_LEAD_MINUTES, clockIn } from "@/lib/push-message";
 import type { ReminderContent } from "@/lib/reminder";
@@ -87,6 +89,67 @@ export function testEmail(input: {
     <TestEmail
       firstName={firstName(input.displayName)}
       houseName={input.houseName}
+      appUrl={input.appUrl}
+      assetUrl={input.assetUrl}
+    />,
+  );
+}
+
+export function emptiedEmail(input: {
+  role: "owner" | "emptier";
+  recipientName: string;
+  ownerName: string;
+  emptierName: string;
+  machineName: string;
+  houseName: string;
+  at: Date;
+  stopped: boolean;
+  timeZone?: string;
+  accent?: string;
+  appUrl?: string;
+  assetUrl?: string;
+}): Promise<ReminderContent> {
+  const verb = input.stopped ? "stopped" : "emptied";
+  return content(
+    input.role === "owner"
+      ? `${firstName(input.emptierName)} ${verb} your ${input.machineName}`
+      : `You ${verb} ${firstName(input.ownerName)}'s ${input.machineName}`,
+    <Emptied
+      to={input.role}
+      firstName={firstName(input.recipientName)}
+      ownerName={firstName(input.ownerName)}
+      emptierName={firstName(input.emptierName)}
+      machineName={input.machineName}
+      houseName={input.houseName}
+      at={clockIn(input.at, input.timeZone)}
+      stopped={input.stopped}
+      accent={input.accent}
+      appUrl={input.appUrl}
+      assetUrl={input.assetUrl}
+    />,
+  );
+}
+
+export function bookingReleasedEmail(input: {
+  displayName: string;
+  machineName: string;
+  houseName: string;
+  startsAt: Date;
+  endsAt: Date;
+  timeZone?: string;
+  accent?: string;
+  appUrl?: string;
+  assetUrl?: string;
+}): Promise<ReminderContent> {
+  return content(
+    `Your ${input.machineName} booking was released`,
+    <BookingReleased
+      firstName={firstName(input.displayName)}
+      machineName={input.machineName}
+      houseName={input.houseName}
+      startsAt={clockIn(input.startsAt, input.timeZone)}
+      endsAt={clockIn(input.endsAt, input.timeZone)}
+      accent={input.accent}
       appUrl={input.appUrl}
       assetUrl={input.assetUrl}
     />,

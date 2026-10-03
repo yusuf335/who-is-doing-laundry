@@ -53,7 +53,13 @@ import {
   sameDay,
   startOfDay,
 } from "@/lib/time";
-import { cyclesOf, machineState, maxMinutesOf, type Machine } from "@/lib/types";
+import {
+  NO_SHOW_MINUTES,
+  cyclesOf,
+  machineState,
+  maxMinutesOf,
+  type Machine,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
   firstOverlap,
@@ -662,6 +668,11 @@ function BookingDetails({
   const who = mine ? "You" : booking.displayName;
   // A running cycle, not a booking: nothing to cancel here, it is ended on the machine.
   const running = booking.inUse === true;
+  // Your own booking has started and the machine is not on yet: say how long is left.
+  const startBy =
+    mine && !running && !booking.checkedInAt && start.getTime() <= now && !over
+      ? new Date(start.getTime() + NO_SHOW_MINUTES * 60_000)
+      : null;
 
   async function cancel() {
     if (!houseId) return;
@@ -718,6 +729,16 @@ function BookingDetails({
             ` · starts in ${formatDuration(start.getTime() - now)}`}
         </p>
       </div>
+
+      {startBy && (
+        <p
+          role="status"
+          className="rounded-lg bg-amber-500/10 px-3 py-2.5 text-sm text-amber-800 dark:text-amber-300"
+        >
+          Start the machine by {formatTime(startBy)} or this booking is released for
+          others.
+        </p>
+      )}
 
       {!running && !mine && !isAdmin && !over && (
         <p className="text-muted-foreground text-sm">

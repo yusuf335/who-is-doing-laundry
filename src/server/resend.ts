@@ -1,6 +1,13 @@
 import "server-only";
 
-import { bookingSoonEmail, cycleDoneEmail, testEmail } from "@/emails/build";
+import {
+  bookingReleasedEmail,
+  bookingSoonEmail,
+  cycleDoneEmail,
+  emptiedEmail,
+  testEmail,
+} from "@/emails/build";
+import type { RenderedEmail } from "@/lib/push-message";
 import type { ReminderContent } from "@/lib/reminder";
 
 interface EmailUrls {
@@ -162,6 +169,61 @@ export async function sendTestEmail(
     testEmail({ ...input, ...urls }),
   );
   return sent === null ? null : (config()?.testRecipient ?? input.to.trim());
+}
+
+/** "Ada emptied your Washer" (or "You emptied Mo's Washer"), sent straight away. */
+export async function sendEmptiedEmail(
+  input: EmailTo & Omit<Parameters<typeof emptiedEmail>[0], "appUrl" | "assetUrl">,
+): Promise<void> {
+  await scheduleEmail(input, null, (urls) => emptiedEmail({ ...input, ...urls }));
+}
+
+/**
+ * "Your booking was released", rendered now but not sent: it travels inside the
+ * scheduled notification, so starting the machine cancels both. Null when email is off.
+ */
+export async function renderBookingReleasedEmail(
+  input: EmailTo &
+    Omit<Parameters<typeof bookingReleasedEmail>[0], "appUrl" | "assetUrl">,
+): Promise<RenderedEmail | null> {
+  const cfg = config();
+  if (!cfg) return null;
+  const from = input.from?.trim() || cfg.from;
+  const to = cfg.testRecipient ?? input.to.trim();
+  if (!from || !to) return null;
+  const content = await bookingReleasedEmail({
+    ...input,
+    appUrl: cfg.appUrl,
+    assetUrl: cfg.assetUrl,
+  });
+  return { from, to, ...content };
+}
+
+/** Sends an email that was rendered earlier, as it is. Never throws. */
+export async function sendRenderedEmail(email: RenderedEmail): Promise<boolean> {
+  const cfg = config();
+  if (!cfg) return false;
+  try {
+    const response = await fetch(ENDPOINT, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfg.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: email.from,
+        to: [email.to],
+        subject: email.subject,
+        text: email.text,
+        html: email.html,
+      }),
+    });
+    if (!response.ok) console.error("resend: could not send", response.status);
+    return response.ok;
+  } catch (error) {
+    console.error("resend: could not send", error);
+    return false;
+  }
 }
 
 let warnedAboutRestrictedKey = false;

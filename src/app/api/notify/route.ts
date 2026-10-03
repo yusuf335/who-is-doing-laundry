@@ -1,7 +1,13 @@
 import { Receiver } from "@upstash/qstash";
-import { isPushDelivery } from "@/lib/push-message";
+import {
+  CHASE_EVERY_MINUTES,
+  cycleLabel,
+  isPushDelivery,
+  stillWaitingPush,
+} from "@/lib/push-message";
 import { sendPush } from "@/server/push";
-import { acceptedNotifyUrls } from "@/server/qstash";
+import { acceptedNotifyUrls, schedulePush } from "@/server/qstash";
+import { sendRenderedEmail } from "@/server/resend";
 
 /**
  * QStash calls this when a scheduled notification is due. Everything it needs is in the
@@ -35,7 +41,39 @@ export async function POST(request: Request) {
   }
   if (!isPushDelivery(delivery)) return new Response("Bad body", { status: 400 });
 
-  const { sent } = await sendPush(delivery.targets, delivery.payload);
+  const [{ sent, gone }] = await Promise.all([
+    sendPush(delivery.targets, delivery.payload),
+    delivery.email ? sendRenderedEmail(delivery.email) : null,
+  ]);
+
+  // A finished machine nobody has emptied: line up the next reminder. It carries the
+  // cycle's label, so pressing Emptied cancels it along with anything else still due.
+  // The chain ends when the allowance runs out or every device has gone; a device that
+  // only failed this once (a busy push service) is tried again next time.
+  const { chase } = delivery;
+  const remaining = delivery.targets.filter((t) => !gone.includes(t.endpoint));
+  if (chase && chase.remaining > 0 && remaining.length > 0) {
+    const next = new Date(Date.now() + CHASE_EVERY_MINUTES * 60_000);
+    await schedulePush(
+      next,
+      {
+        payload: stillWaitingPush({
+          machineName: chase.machineName,
+          sessionId: chase.sessionId,
+          minutesWaiting: (next.getTime() - chase.finishedAt) / 60_000,
+        }),
+        targets: remaining,
+        chase: { ...chase, remaining: chase.remaining - 1 },
+      },
+      {
+        label: cycleLabel(chase.sessionId),
+        // QStash retries a delivery that failed after this ran; one id per step means
+        // the retry cannot start a second chain beside this one.
+        deduplicationId: `${cycleLabel(chase.sessionId)}-${chase.remaining - 1}`,
+      },
+    );
+  }
+
   // Always a success once it has been tried: a retry would only send duplicates to the
   // devices that did get it. Devices that are gone are forgotten the next time their
   // owner changes their notification settings.

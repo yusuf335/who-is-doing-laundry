@@ -1,6 +1,6 @@
 import { Timestamp } from "firebase/firestore";
 import { describe, expect, it } from "vitest";
-import { machineState, type Machine } from "@/lib/types";
+import { isNoShow, machineState, type Machine } from "@/lib/types";
 
 const now = Date.UTC(2026, 8, 19, 12, 0, 0);
 
@@ -49,5 +49,27 @@ describe("machineState", () => {
   it("is finished exactly at the expected end", () => {
     const m = machine({ status: "in_use", currentSession: session(now) });
     expect(machineState(m, now)).toBe("finished");
+  });
+});
+
+describe("isNoShow", () => {
+  const minute = 60_000;
+  const at = (offsetMin: number) =>
+    Timestamp.fromMillis(1_000_000_000_000 + offsetMin * minute);
+  const now = 1_000_000_000_000;
+  const booking = (startMin: number, endMin: number, checkedIn = false) => ({
+    startAt: at(startMin),
+    endAt: at(endMin),
+    ...(checkedIn ? { checkedInAt: at(startMin) } : {}),
+  });
+
+  it("releases a booking 15 minutes after its start when nobody started it", () => {
+    expect(isNoShow(booking(-15, 45), now)).toBe(true);
+    expect(isNoShow(booking(-14, 45), now)).toBe(false);
+  });
+
+  it("never releases one that was checked in, or that is already over", () => {
+    expect(isNoShow(booking(-30, 30, true), now)).toBe(false);
+    expect(isNoShow(booking(-90, -30), now)).toBe(false);
   });
 });

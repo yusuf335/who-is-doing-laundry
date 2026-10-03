@@ -17,22 +17,30 @@ import { BookingFlow, type FlowState } from "@/components/schedule/booking-flow"
 import { DesktopCalendar } from "@/components/schedule/desktop-calendar";
 import { MyBookings } from "@/components/schedule/my-bookings";
 import { PhoneSchedule } from "@/components/schedule/phone-schedule";
+import {
+  DesktopTodaySkeleton,
+  PhoneTodaySkeleton,
+  TodaySkeleton,
+} from "@/components/schedule/today-skeleton";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Card, CardContent } from "@/components/ui/card";
 import { useMachines, useUpcomingBookings } from "@/hooks/use-house-data";
 import { DESKTOP_QUERY, useMediaQuery } from "@/hooks/use-media-query";
 import { useNow } from "@/hooks/use-now";
 import { machineColors } from "@/lib/machine-color";
 import { runAction } from "@/lib/run-action";
 import { formatDayAndTime } from "@/lib/time";
-import type { Booking, Machine } from "@/lib/types";
+import { isNoShow, type Booking, type Machine } from "@/lib/types";
 import { sessionBlocks } from "@/lib/week";
-import { pruneOldRecordsAction } from "@/server/actions";
+import { catchUpNotificationsAction, pruneOldRecordsAction } from "@/server/actions";
+
+/** The catch-up runs once per visit, not each time the Today screen is opened. */
+let caughtUpFor: string | null = null;
 
 export default function TodayPage() {
   return (
-    <RequireHouse>
+    // Shaped like the screen itself while the house loads, rather than a spinner.
+    <RequireHouse skeleton={<TodaySkeleton />}>
       <Today />
     </RequireHouse>
   );
@@ -53,9 +61,15 @@ function Today() {
   const minuteNow = Math.floor(now / 60_000) * 60_000;
   const colors = useMemo(() => machineColors(machines.data), [machines.data]);
   // Running cycles sit on the calendar next to the bookings, so their time never looks free.
+  // A booking nobody started within 15 minutes is released: free everywhere at once,
+  // even before the tidy-up deletes it.
+  const liveBookings = useMemo(
+    () => bookings.data.filter((b) => !isNoShow(b, minuteNow)),
+    [bookings.data, minuteNow],
+  );
   const calendarBookings = useMemo(
-    () => [...bookings.data, ...sessionBlocks(machines.data, minuteNow)],
-    [bookings.data, machines.data, minuteNow],
+    () => [...liveBookings, ...sessionBlocks(machines.data, minuteNow)],
+    [liveBookings, machines.data, minuteNow],
   );
   const [flow, setFlow] = useState<FlowState>(null);
   // Only one layout is mounted, so a phone never opens the desktop's extra listeners.
@@ -73,7 +87,20 @@ function Today() {
   );
   const book = useCallback(() => setFlow({ step: "choose" }), []);
 
-  const hasExpired = bookings.data.some((b) => b.endAt.toMillis() <= now);
+  // Something to tidy: a booking that is over, or one released because nobody came.
+  const hasExpired = bookings.data.some(
+    (b) => b.endAt.toMillis() <= now || isNoShow(b, now),
+  );
+
+  // Your upcoming bookings that have no notifications yet (made before they existed, or
+  // while you had no device) get them now. Once per visit; the server skips the rest.
+  useEffect(() => {
+    if (!houseId || caughtUpFor === houseId) return;
+    caughtUpFor = houseId;
+    void runAction(() => catchUpNotificationsAction({ houseId })).catch(
+      (error: unknown) => console.error("catch up notifications", error),
+    );
+  }, [houseId]);
 
   // Sweeping costs up to 30 reads, so it runs when there is visibly something to clear,
   // and otherwise only every few hours per browser (see /privacy for what it deletes).
@@ -106,10 +133,8 @@ function Today() {
           <ScheduleBanner date={new Date(now)} />
 
           {machines.loading ? (
-            <>
-              <MachineSkeleton />
-              <MachineSkeleton />
-            </>
+            // The real banner is already above; the rest of the screen holds its shape.
+            <PhoneTodaySkeleton banner={false} />
           ) : machines.error ? (
             <Card size="sm">
               <CardContent>
@@ -124,7 +149,7 @@ function Today() {
                 key={machine.id}
                 machine={machine}
                 color={colors[machine.id]}
-                bookings={bookings.data}
+                bookings={liveBookings}
                 now={now}
               />
             ))
@@ -134,7 +159,7 @@ function Today() {
           {bookings.error && <LoadError what="the bookings" />}
           {ready && (
             <MyBookings
-              bookings={bookings.data}
+              bookings={liveBookings}
               machines={machines.data}
               colors={colors}
               now={minuteNow}
@@ -152,7 +177,7 @@ function Today() {
 
       <div className="hidden lg:block">
         {machines.loading || !desktop ? (
-          <Skeleton className="h-[calc(100svh-6.5rem)] w-full rounded-2xl" />
+          <DesktopTodaySkeleton />
         ) : machines.error ? (
           <LoadError what="the machines" />
         ) : machines.data.length === 0 ? (
@@ -260,17 +285,5 @@ function FreshnessLine({
           : `Updates on their own. Last change ${when}`}
       </span>
     </p>
-  );
-}
-
-function MachineSkeleton() {
-  return (
-    <Card size="sm" className="border-l-4">
-      <CardHeader className="flex flex-row items-center gap-2">
-        <Skeleton className="size-5 rounded-full" />
-        <Skeleton className="h-5 flex-1" />
-        <Skeleton className="h-9 w-16" />
-      </CardHeader>
-    </Card>
   );
 }

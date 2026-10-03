@@ -17,9 +17,12 @@ const STUCK_AFTER_MS = 12_000;
 export function RequireHouse({
   children,
   adminOnly = false,
+  skeleton,
 }: {
   children: React.ReactNode;
   adminOnly?: boolean;
+  /** Shown inside the app shell while loading, so the page keeps its shape. */
+  skeleton?: React.ReactNode;
 }) {
   const router = useRouter();
   const { status, waitingFor, isAdmin } = useHouse();
@@ -45,6 +48,7 @@ export function RequireHouse({
 
   if (!isFirebaseConfigured) return <SetupNotice />;
   if (stuck && status === "loading") return <StuckNotice waitingFor={waitingFor} />;
+  if (status === "loading" && skeleton) return <AppShell>{skeleton}</AppShell>;
   if (status !== "ready") return <LoadingScreen />;
   if (adminOnly && !isAdmin) return <LoadingScreen label="Redirecting…" />;
 

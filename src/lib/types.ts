@@ -124,6 +124,12 @@ export interface Member {
    * and only ever sent when the admin has turned email on for the house too.
    */
   emailReminders?: boolean;
+  /**
+   * Whether this person wants phone notifications. Saved on the account like email, so
+   * it survives signing out: each device they sign in on reconnects itself when its
+   * browser already allows notifications.
+   */
+  pushReminders?: boolean;
 }
 
 /** How long a finished cycle stays in the log before it is deleted automatically. */
@@ -262,6 +268,9 @@ export interface LaundrySession {
   startedAt: Timestamp;
   expectedEndAt: Timestamp;
   endedAt: Timestamp | null;
+  /** Who pressed Emptied, Done or Stop. Missing on cycles ended before this was kept. */
+  endedByUid?: string;
+  endedByName?: string;
 }
 
 /**
@@ -299,6 +308,27 @@ export interface Booking {
   startAt: Timestamp;
   endAt: Timestamp;
   createdAt: Timestamp | null;
+  /** Set when the booker started the machine for it. Without it the booking lapses. */
+  checkedInAt?: Timestamp;
+}
+
+/** Minutes after its start a booking nobody has started is released for others. */
+export const NO_SHOW_MINUTES = 15;
+
+/**
+ * Released: its start was more than {@link NO_SHOW_MINUTES} ago and the booker never
+ * started the machine. It then counts as free everywhere, although the document lingers
+ * until the next tidy-up. The server and the Firestore rules apply the same test.
+ */
+export function isNoShow(
+  booking: Pick<Booking, "startAt" | "endAt" | "checkedInAt">,
+  now: number,
+): boolean {
+  return (
+    !booking.checkedInAt &&
+    booking.startAt.toMillis() + NO_SHOW_MINUTES * 60_000 <= now &&
+    booking.endAt.toMillis() > now
+  );
 }
 
 /** Top-level pointer so a signed-in user can find their house in one read. */

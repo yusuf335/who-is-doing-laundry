@@ -74,6 +74,7 @@ function History() {
                   machineName={nameOf(session.machineId)}
                   isDryer={typeOf(session.machineId) === "dryer"}
                   mine={session.uid === member?.uid}
+                  viewerUid={member?.uid}
                   now={now}
                 />
               ))}
@@ -90,18 +91,26 @@ function SessionRow({
   machineName,
   isDryer,
   mine,
+  viewerUid,
   now,
 }: {
   session: LaundrySession;
   machineName: string;
   isDryer: boolean;
   mine: boolean;
+  viewerUid: string | undefined;
   now: number;
 }) {
   const started = session.startedAt.toDate();
   const ended = session.endedAt?.toDate() ?? null;
   const running = ended === null;
   const Icon = isDryer ? IconWind : IconWashMachine;
+  // Who pressed the button, when it was not the person whose laundry it was. Their own
+  // "Done" needs no mention; someone else emptying it is the thing worth knowing.
+  const emptiedBy =
+    session.endedByUid && session.endedByUid !== session.uid
+      ? `Emptied by ${session.endedByUid === viewerUid ? "you" : session.endedByName}`
+      : null;
 
   return (
     <li className="flex items-center gap-3 py-2.5">
@@ -117,6 +126,9 @@ function SessionRow({
             ? ` to ${sameDay(started, ended) ? formatTime(ended) : formatDayAndTime(ended, new Date(now))}`
             : ""}
         </p>
+        {ended && emptiedBy && (
+          <p className="text-muted-foreground truncate text-xs">{emptiedBy}</p>
+        )}
       </div>
       {running && (
         <Badge variant="secondary" className="h-5 shrink-0">

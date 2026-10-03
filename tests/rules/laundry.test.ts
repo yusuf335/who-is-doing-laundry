@@ -19,6 +19,7 @@ import type { ServerContext } from "@/lib/firebase-server";
 import {
   addMachine,
   cancelBooking,
+  catchUpNotifications,
   clearHousePointer,
   createBooking,
   createHouse,
@@ -49,7 +50,6 @@ import {
   SLOT_MINUTES,
   addDays,
   atTime,
-  formatTime,
   slotIdsForRange,
   snapToSlot,
   weekdayOf,
@@ -64,6 +64,7 @@ import type {
 } from "@/lib/types";
 import { DEFAULT_CYCLES, DEFAULT_MAX_MINUTES, WEEKDAYS } from "@/lib/types";
 import { DEFAULT_MACHINE_COLORS } from "@/lib/machine-color";
+import { clockIn } from "@/lib/push-message";
 
 // Every context is a rules-enforced Firestore signed in as that uid, so each test proves
 // both that the logic does the right thing and that firestore.rules lets it.
@@ -1223,11 +1224,13 @@ describe("start blocked by a booking", () => {
       startSession(other(), { houseId, machineId: washerId, minutes: 30 }),
       "is booked by Mo",
     );
-    // The message names the machine and when the slot frees up.
+    // The message names the machine and when the slot frees up, in the house's own
+    // time zone (the server's clock is UTC, which would be the wrong hour for people).
+    const { timeZone } = await readHouse(houseId);
     await expect(
       startSession(other(), { houseId, machineId: washerId, minutes: 30 }),
     ).rejects.toThrow(
-      `Washer is booked by Mo until ${formatTime(new Date(endMs))}. Pick a shorter cycle or wait for their slot.`,
+      `Washer is booked by Mo until ${clockIn(new Date(endMs), timeZone)}. Pick a shorter cycle or wait for their slot.`,
     );
     expect((await readMachine(houseId, washerId))!.status).toBe("free");
     expect(await listSessions(houseId)).toHaveLength(0);
@@ -1437,8 +1440,14 @@ describe("push devices", () => {
     process.env.VAPID_PRIVATE_KEY = "test-private";
   });
   afterAll(() => {
-    process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY = saved.public;
-    process.env.VAPID_PRIVATE_KEY = saved.private;
+    // Assigning undefined would store the string "undefined"; unset instead.
+    for (const [key, value] of [
+      ["NEXT_PUBLIC_VAPID_PUBLIC_KEY", saved.public],
+      ["VAPID_PRIVATE_KEY", saved.private],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
 
   const devices = (uid: string) =>
@@ -2029,6 +2038,163 @@ describe("updateMemberGroup / removeMember", () => {
       removeMember(other(), { houseId, uid: ADMIN }),
       "Only the house admin",
     );
+  });
+});
+
+describe("who emptied it", () => {
+  it("notes who pressed Emptied in the week's log", async () => {
+    const { houseId, washerId } = await setupHouse();
+    await startSession(member(), { houseId, machineId: washerId, minutes: 30 });
+    const sessionId = (await readMachine(houseId, washerId))!.currentSession!.sessionId;
+    // The admin may stop anyone's cycle; the log says it was them.
+    await endSession(admin(), { houseId, machineId: washerId });
+    const log = await raw(async (db) =>
+      (await getDoc(doc(db, "houses", houseId, "sessions", sessionId))).data(),
+    );
+    expect(log).toMatchObject({ endedByUid: ADMIN, endedByName: "Ada" });
+    expect(log!.endedAt).toBeDefined();
+  });
+});
+
+describe("catching up on notifications", () => {
+  it("does nothing, harmlessly, when nothing can be scheduled", async () => {
+    const { houseId, washerId } = await setupHouse();
+    await createBooking(member(), {
+      houseId,
+      machineId: washerId,
+      startMs: futureSlot(2),
+      endMs: futureSlot(3),
+    });
+    expect(await catchUpNotifications(member(), { houseId })).toEqual({ scheduled: 0 });
+  });
+});
+
+describe("bookings nobody starts", () => {
+  const QUARTER = 15 * 60_000;
+  const nowSlot = () => Math.floor(Date.now() / QUARTER) * QUARTER;
+
+  /** A booking written directly, as if made earlier, with its slot locks. */
+  async function seedBooking(
+    houseId: string,
+    machineId: string,
+    uid: string,
+    startMs: number,
+    endMs: number,
+    extra: Record<string, unknown> = {},
+  ) {
+    const id = `seed-${uid}-${startMs}`;
+    await raw(async (db) => {
+      const fields = {
+        machineId,
+        uid,
+        displayName: uid,
+        startAt: Timestamp.fromMillis(startMs),
+        endAt: Timestamp.fromMillis(endMs),
+      };
+      await setDoc(doc(db, "houses", houseId, "bookings", id), {
+        ...fields,
+        createdAt: Timestamp.now(),
+        ...extra,
+      });
+      for (const [slotIndex, slotId] of slotIdsForRange(
+        machineId,
+        new Date(startMs),
+        new Date(endMs),
+      ).entries()) {
+        await setDoc(doc(db, "houses", houseId, "slots", slotId), {
+          ...fields,
+          bookingId: id,
+          slotIndex,
+        });
+      }
+    });
+    return id;
+  }
+
+  it("frees the slot for someone else once 15 minutes pass unstarted", async () => {
+    const { houseId, washerId } = await setupHouse();
+    const lapsedId = await seedBooking(
+      houseId,
+      washerId,
+      OTHER,
+      nowSlot() - 2 * QUARTER,
+      nowSlot() + 4 * QUARTER,
+    );
+    await createBooking(member(), {
+      houseId,
+      machineId: washerId,
+      startMs: nowSlot() + QUARTER,
+      endMs: nowSlot() + 3 * QUARTER,
+    });
+    const bookings = await listBookings(houseId);
+    expect(bookings.map((b) => b.id)).not.toContain(lapsedId);
+    expect(bookings.map((b) => b.data().uid)).toEqual([MEMBER]);
+  });
+
+  it("lets someone start the machine over a lapsed booking", async () => {
+    const { houseId, washerId } = await setupHouse();
+    await seedBooking(
+      houseId,
+      washerId,
+      OTHER,
+      nowSlot() - 2 * QUARTER,
+      nowSlot() + 4 * QUARTER,
+    );
+    await startSession(member(), { houseId, machineId: washerId, minutes: 30 });
+    expect((await readMachine(houseId, washerId))!.status).toBe("in_use");
+  });
+
+  it("still holds a booking that has not lapsed yet", async () => {
+    const { houseId, washerId } = await setupHouse();
+    await seedBooking(houseId, washerId, OTHER, nowSlot(), nowSlot() + 4 * QUARTER);
+    await expectLaundryError(
+      startSession(member(), { houseId, machineId: washerId, minutes: 30 }),
+      "is booked by",
+    );
+  });
+
+  it("still holds a booking that was checked in", async () => {
+    const { houseId, washerId } = await setupHouse();
+    await seedBooking(
+      houseId,
+      washerId,
+      OTHER,
+      nowSlot() - 2 * QUARTER,
+      nowSlot() + 4 * QUARTER,
+      { checkedInAt: Timestamp.now() },
+    );
+    await expectLaundryError(
+      startSession(member(), { houseId, machineId: washerId, minutes: 30 }),
+      "is booked by",
+    );
+  });
+
+  it("checks in your own booking when you start the machine", async () => {
+    const { houseId, washerId } = await setupHouse();
+    const id = await seedBooking(
+      houseId,
+      washerId,
+      MEMBER,
+      nowSlot(),
+      nowSlot() + 4 * QUARTER,
+    );
+    await startSession(member(), { houseId, machineId: washerId, minutes: 30 });
+    const booking = (await listBookings(houseId)).find((b) => b.id === id);
+    expect(booking?.data().checkedInAt).toBeDefined();
+  });
+
+  it("tidies lapsed bookings away when the app prunes", async () => {
+    const { houseId, washerId } = await setupHouse();
+    await seedBooking(
+      houseId,
+      washerId,
+      OTHER,
+      nowSlot() - 2 * QUARTER,
+      nowSlot() + 4 * QUARTER,
+    );
+    await pruneOldRecords(member(), { houseId });
+    expect(await listBookings(houseId)).toHaveLength(0);
+    expect(await listSlots(houseId)).toHaveLength(0);
   });
 });
 

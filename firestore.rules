@@ -216,17 +216,33 @@ service cloud.firestore {
           && request.resource.data.uid == uid()
           && request.resource.data.machineId is string
           && request.resource.data.startedAt is timestamp
-          && !('pushId' in request.resource.data);
+          && !('pushId' in request.resource.data)
+          && !('ownerPush' in request.resource.data);
         // Anyone in the house may close a cycle (that is the "I emptied it" button), and
         // the server stamps the id of the scheduled reminder. Nothing else can be rewritten.
         allow update: if isMember(houseId)
-          && (onlyChanges(['endedAt', 'reminderId'])
-            // Its notification id: the owner, once. The server checks the id before use.
+          && (onlyChanges(['reminderId'])
+            // Closing it, signed by whoever pressed the button: always themselves, and
+            // only the once, so nobody can later claim (or disown) emptying it.
+            || (onlyChanges(['endedAt', 'endedByUid', 'endedByName'])
+              && resource.data.endedAt == null
+              && !('endedByUid' in resource.data)
+              && request.resource.data.endedByUid == uid()
+              && request.resource.data.endedByName is string
+              && request.resource.data.endedByName.size() <= 100)
+            // Its notification id and the owner's sealed devices: the owner, once. The
+            // server checks the id before use and alone can open the seal.
             || (resource.data.uid == uid()
               && !('pushId' in resource.data)
-              && onlyChanges(['pushId'])
-              && request.resource.data.pushId is string
-              && request.resource.data.pushId.size() <= 200));
+              && !('ownerPush' in resource.data)
+              && onlyChanges(['pushId', 'ownerPush'])
+              && ('pushId' in request.resource.data || 'ownerPush' in request.resource.data)
+              && (!('pushId' in request.resource.data)
+                || (request.resource.data.pushId is string
+                  && request.resource.data.pushId.size() <= 200))
+              && (!('ownerPush' in request.resource.data)
+                || (request.resource.data.ownerPush is string
+                  && request.resource.data.ownerPush.size() <= 20000))));
         allow delete: if isMember(houseId) && (isAdmin(houseId) || staleSession());
       }
 
@@ -252,29 +268,48 @@ service cloud.firestore {
           && request.resource.data.endAt > request.time
           && !('pushId' in request.resource.data)
           && !('reminderId' in request.resource.data)
+          && !('checkedInAt' in request.resource.data)
+          && !('scheduled' in request.resource.data)
           // Two weeks ahead in whole days (MAX_DAYS_AHEAD); a day's slack for time zones,
           // the same as the server.
           && request.resource.data.startAt <= request.time + duration.value(15, 'd');
         // Edits go through cancel + rebook so the slot locks always match the booking.
-        // The one exception: the owner noting the ids of its "starts soon" reminders
-        // (phone and email), once. The server checks each id before using it.
+        // The exceptions: the owner noting that its notifications are scheduled, and the
+        // ids needed to call them off. Each can be written once and never changed after.
         allow update: if isMember(houseId)
           && resource.data.uid == uid()
-          && !('pushId' in resource.data)
-          && !('reminderId' in resource.data)
-          && onlyChanges(['pushId', 'reminderId'])
-          // Must actually set one: an empty rewrite is still a rewrite.
-          && ('pushId' in request.resource.data || 'reminderId' in request.resource.data)
+          && onlyChanges(['pushId', 'reminderId', 'scheduled'])
+          && request.resource.data.diff(resource.data).affectedKeys().size() > 0
+          && (!('pushId' in resource.data)
+            || request.resource.data.pushId == resource.data.pushId)
+          && (!('reminderId' in resource.data)
+            || request.resource.data.reminderId == resource.data.reminderId)
+          && (!('scheduled' in resource.data)
+            || request.resource.data.scheduled == resource.data.scheduled)
+          && (!('scheduled' in request.resource.data) || request.resource.data.scheduled == true)
           && (!('pushId' in request.resource.data)
             || (request.resource.data.pushId is string
               && request.resource.data.pushId.size() <= 200))
           && (!('reminderId' in request.resource.data)
             || (request.resource.data.reminderId is string
               && request.resource.data.reminderId.size() <= 200));
+        // Checking in: the booker started the machine for it. Once, stamped by the
+        // server's clock, so it cannot be backdated to dodge the release.
+        allow update: if isMember(houseId)
+          && resource.data.uid == uid()
+          && !('checkedInAt' in resource.data)
+          && onlyChanges(['checkedInAt'])
+          && request.resource.data.checkedInAt == request.time;
         // Owners and the admin cancel; anyone may sweep a booking whose time has passed,
-        // which is how the app keeps no record of past bookings.
+        // or one nobody started within 15 minutes (NO_SHOW_MINUTES), which is then free.
         allow delete: if isMember(houseId)
-          && (resource.data.uid == uid() || isAdmin(houseId) || expired());
+          && (resource.data.uid == uid() || isAdmin(houseId) || expired() || lapsed());
+      }
+
+      function lapsed() {
+        return !('checkedInAt' in resource.data)
+          && resource.data.startAt is timestamp
+          && resource.data.startAt + duration.value(15, 'm') <= request.time;
       }
 
       function expired() {
@@ -293,7 +328,11 @@ service cloud.firestore {
           && request.resource.data.endAt is timestamp;
         allow update: if false;
         allow delete: if isMember(houseId)
-          && (resource.data.uid == uid() || isAdmin(houseId) || expired());
+          && (resource.data.uid == uid() || isAdmin(houseId) || expired()
+            // A lapsed booking's locks go with it, in the same write and only then.
+            || (resource.data.startAt is timestamp
+              && resource.data.startAt + duration.value(15, 'm') <= request.time
+              && !existsAfter(/databases/$(database)/documents/houses/$(houseId)/bookings/$(resource.data.bookingId))));
       }
     }
   }

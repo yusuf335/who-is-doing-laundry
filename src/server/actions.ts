@@ -99,6 +99,10 @@ export async function removePushDeviceAction(input: { endpoint: string }) {
   return act((ctx) => laundry.removePushDevice(ctx, input));
 }
 
+export async function catchUpNotificationsAction(input: { houseId: string }) {
+  return act((ctx) => laundry.catchUpNotifications(ctx, input));
+}
+
 export async function sendTestPushAction(input: {
   subscription: unknown;
   label: string;
@@ -166,6 +170,13 @@ export async function updateScheduleAction(input: {
   schedule: Schedule;
 }) {
   return act((ctx) => laundry.updateSchedule(ctx, input));
+}
+
+export async function setMyPushRemindersAction(input: {
+  houseId: string;
+  enabled: boolean;
+}) {
+  return act((ctx) => laundry.setMyPushReminders(ctx, input));
 }
 
 export async function setMyEmailRemindersAction(input: {

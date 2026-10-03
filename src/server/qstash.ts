@@ -59,6 +59,12 @@ export function schedulingConfigured(): boolean {
 export async function schedulePush(
   deliverAt: Date,
   delivery: PushDelivery,
+  options: {
+    /** Lets every notification about one cycle be cancelled together. */
+    label?: string;
+    /** QStash accepts one message per id, so a retried step cannot schedule twice. */
+    deduplicationId?: string;
+  } = {},
 ): Promise<string | null> {
   const qstash = client();
   const url = notifyUrl();
@@ -71,6 +77,8 @@ export async function schedulePush(
       notBefore: Math.floor(deliverAt.getTime() / 1000),
       // A reminder sent twice is worse than one that is a minute late.
       retries: 2,
+      ...(options.label ? { label: options.label } : {}),
+      ...(options.deduplicationId ? { deduplicationId: options.deduplicationId } : {}),
     });
     return result.messageId;
   } catch (error) {
@@ -102,5 +110,20 @@ export async function cancelPush(messageId: string, expectedTag: string): Promis
   } catch (error) {
     // Already delivered, or already gone. Either way there is nothing left to stop.
     console.error("qstash: could not cancel a notification", error);
+  }
+}
+
+/**
+ * Cancels every notification still waiting with this label: the "done" one and any
+ * repeat. Safe to hand a label from outside, because it is always derived from the
+ * cycle being ended, never taken from a stored id.
+ */
+export async function cancelLabelled(label: string): Promise<void> {
+  const qstash = client();
+  if (!qstash) return;
+  try {
+    await qstash.messages.cancel({ filter: { label } });
+  } catch (error) {
+    console.error("qstash: could not cancel notifications", label, error);
   }
 }

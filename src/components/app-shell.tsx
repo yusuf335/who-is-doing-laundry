@@ -15,6 +15,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useSyncExternalStore } from "react";
 import { useAuth } from "@/components/providers/auth-provider";
+import { useRestorePush } from "@/hooks/use-restore-push";
 import { useHouse } from "@/components/providers/house-provider";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -77,6 +78,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { signOut } = useAuth();
   const { house, member, isAdmin } = useHouse();
+  // Reconnects this browser's notifications when the account has them on.
+  useRestorePush();
 
   const nav = NAV;
   // The calendar wants the whole screen on a desktop; everything else reads better narrow.

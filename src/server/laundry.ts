@@ -2,6 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import { FirebaseError } from "firebase/app";
+import { after } from "next/server";
 import {
   deleteDoc,
   doc,
@@ -41,29 +42,40 @@ import {
   userDoc,
 } from "@/lib/paths";
 import {
+  MAX_CHASES,
   MAX_PUSH_DEVICES,
+  NUDGE_EVERY_MINUTES,
+  bookingLabel,
+  bookingReleasedPush,
   bookingReminderAt,
   bookingSoonPush,
+  bookingStartedPush,
+  clockIn,
   cycleDonePush,
+  cycleLabel,
+  emptiedPush,
   isPushTarget,
+  type PushChase,
   type PushPayload,
   type PushTarget,
 } from "@/lib/push-message";
 import { dayAccess, defaultSchedule } from "@/lib/schedule";
 import { parseSender } from "@/lib/reminder";
 import { pushConfigured, sendPush } from "@/server/push";
-import { cancelPush, schedulePush, schedulingConfigured } from "@/server/qstash";
+import { cancelLabelled, schedulePush, schedulingConfigured } from "@/server/qstash";
 import {
   cancelScheduledEmail,
   remindersEnabled,
+  renderBookingReleasedEmail,
   scheduleBookingReminder,
   scheduleCycleReminder,
+  sendEmptiedEmail,
   sendTestEmail as deliverTestEmail,
 } from "@/server/resend";
+import { seal, unseal } from "@/server/seal";
 import {
   MAX_BOOKING_MINUTES,
   SLOT_MINUTES,
-  formatTime,
   SERVER_MAX_AHEAD_MS,
   MAX_DAYS_AHEAD,
   isValidTimeZone,
@@ -87,9 +99,11 @@ import {
   DEFAULT_MAX_MINUTES,
   MACHINE_TYPES,
   MAX_CYCLES_PER_MACHINE,
+  NO_SHOW_MINUTES,
   SCHEDULE_MODES,
   SESSION_RETENTION_DAYS,
   WEEKDAYS,
+  isNoShow,
   maxMinutesOf,
   type Cycle,
 } from "@/lib/types";
@@ -438,6 +452,10 @@ export async function startSession(
     expectedEndAt.toDate(),
   );
 
+  // A booking nobody started in time no longer holds the machine: clear it first, so
+  // the slot check below does not mistake it for one that does.
+  await releaseLapsed(ctx, input.houseId, input.machineId);
+
   let machineName = "machine";
   let machineColor: string | undefined;
   const claimedBy = (machine: Omit<Machine, "id">) =>
@@ -468,7 +486,9 @@ export async function startSession(
     );
     if (clash) {
       const booking = clash.data() as { displayName?: string; endAt?: Timestamp };
-      const until = booking.endAt ? ` until ${formatTime(booking.endAt.toDate())}` : "";
+      const until = booking.endAt
+        ? ` until ${clockIn(booking.endAt.toDate(), house.timeZone)}`
+        : "";
       fail(
         `${machine.name} is booked by ${booking.displayName ?? "someone"}${until}. Pick a shorter cycle or wait for their slot.`,
       );
@@ -504,17 +524,40 @@ export async function startSession(
     throw error;
   });
 
+  // Starting the machine checks in your booking for it: no more "start it" nudges, and
+  // it will not be released.
+  await checkIn(ctx, input.houseId, input.machineId, member.uid);
+
   // Only once the machine is ours: scheduling takes network round trips, and nothing
   // about the claim should wait on them. Each is best effort.
+  // "Done", then every 15 minutes until somebody presses Emptied.
   const pushId = await schedulePushForMe(
     ctx,
     expectedEndAt.toDate(),
     cycleDonePush({ machineName, sessionId: sessionRef.id }),
+    {
+      chase: {
+        machineName,
+        sessionId: sessionRef.id,
+        finishedAt: expectedEndAt.toMillis(),
+        remaining: MAX_CHASES,
+      },
+      label: cycleLabel(sessionRef.id),
+    },
   );
-  if (pushId) {
-    await updateDoc(sessionRef, { pushId }).catch((error: unknown) => {
-      // Without the id the notification cannot be called off early; a nuisance only.
-      console.error("store push id", error);
+
+  // Sealed copy of this person's devices, so whoever empties the machine can tell them,
+  // although they cannot read this person's device list themselves. Bound to this owner
+  // and this cycle, so a copy pasted onto another cycle opens to nothing.
+  const myTargets = pushConfigured() ? await myPushTargets(ctx).catch(() => []) : [];
+  const ownerPush =
+    myTargets.length > 0 ? seal(myTargets, `${member.uid}:${sessionRef.id}`) : null;
+  const marks = { ...(pushId ? { pushId } : {}), ...(ownerPush ? { ownerPush } : {}) };
+  if (Object.keys(marks).length > 0) {
+    await updateDoc(sessionRef, marks).catch((error: unknown) => {
+      // Without these the notification cannot be called off early, or the owner told
+      // who emptied it; a nuisance only.
+      console.error("store push marks", error);
     });
   }
 
@@ -549,12 +592,16 @@ export async function endSession(
   ctx: ServerContext,
   input: { houseId: string; machineId: string },
 ) {
-  const { member, isAdmin } = await requireMember(ctx, input.houseId);
+  const { house, member, isAdmin } = await requireMember(ctx, input.houseId);
   const machineRef = machineDoc(ctx.db, input.houseId, input.machineId);
   let reminderToCancel: string | null = null;
-  let pushToCancel: string | null = null;
-  let pushTag = "";
+  let endedSessionId: string | null = null;
   let ownerUid = "";
+  let ownerName = "";
+  let ownerPush: unknown = null;
+  let machineName = "machine";
+  let machineColor: string | undefined;
+  let stopped = false;
 
   await runTransaction(ctx.db, async (tx) => {
     const snap = await tx.get(machineRef);
@@ -563,6 +610,10 @@ export async function endSession(
     const session = machine.currentSession;
     if (machine.status === "free" || !session) return;
     ownerUid = session.uid;
+    ownerName = session.displayName;
+    endedSessionId = session.sessionId ?? null;
+    machineName = machine.name;
+    machineColor = machine.color;
 
     const finished = session.expectedEndAt.toMillis() <= Date.now();
     if (session.uid !== member.uid && !isAdmin && !finished) {
@@ -577,17 +628,22 @@ export async function endSession(
 
     tx.update(machineRef, { status: "free", currentSession: null });
     // Close the log entry if it is still there; pruning may already have removed it.
-    if (logRef && logSnap?.exists()) tx.update(logRef, { endedAt: Timestamp.now() });
+    // It also says who pressed the button, so "who emptied my washing?" has an answer.
+    if (logRef && logSnap?.exists()) {
+      tx.update(logRef, {
+        endedAt: Timestamp.now(),
+        endedByUid: member.uid,
+        endedByName: member.displayName,
+      });
+    }
+
+    ownerPush = logSnap?.data()?.ownerPush ?? null;
+    stopped = session.expectedEndAt.toMillis() > Date.now();
 
     // Stopped early, so the "your wash is done" email is no longer true.
     if (session.expectedEndAt.toMillis() > Date.now()) {
       const pending = logSnap?.data()?.reminderId;
       if (typeof pending === "string") reminderToCancel = pending;
-      const pendingPush = logSnap?.data()?.pushId;
-      if (typeof pendingPush === "string" && session.sessionId) {
-        pushToCancel = pendingPush;
-        pushTag = cycleDonePush({ machineName: "", sessionId: session.sessionId }).tag;
-      }
     }
   });
 
@@ -597,7 +653,33 @@ export async function endSession(
       await emailOf(ctx, input.houseId, ownerUid),
     );
   }
-  if (pushToCancel) await cancelPush(pushToCancel, pushTag);
+  // Somebody else emptied (or stopped) it: tell the owner who, and confirm it to them.
+  if (endedSessionId && ownerUid && ownerUid !== member.uid) {
+    await tellAboutEmptying(ctx, {
+      house,
+      houseId: input.houseId,
+      emptier: member,
+      ownerUid,
+      ownerName,
+      ownerPush,
+      machineName,
+      machineColor,
+      sessionId: endedSessionId,
+      stopped,
+    });
+  }
+
+  // Emptied or stopped: the "done" notification and every "still waiting" repeat stop.
+  if (endedSessionId && schedulingConfigured()) {
+    const label = cycleLabel(endedSessionId);
+    await cancelLabelled(label);
+    // A repeat being delivered at this very moment schedules its successor after the
+    // cancel above, so look again a few seconds later, once the response has gone.
+    later(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 8_000));
+      await cancelLabelled(label);
+    });
+  }
 }
 
 /* ------------------------------------------------------------------ bookings */
@@ -645,15 +727,22 @@ export async function createBooking(
     running &&
     running.expectedEndAt.toMillis() > start.getTime()
   ) {
-    fail(`${machineName} is in use until ${formatTime(running.expectedEndAt.toDate())}.`);
+    fail(
+      `${machineName} is in use until ${clockIn(running.expectedEndAt.toDate(), house.timeZone)}.`,
+    );
   }
+
+  // A booking nobody started in time is free for others: clear it before checking.
+  await releaseLapsed(ctx, input.houseId, input.machineId);
 
   const slotIds = slotIdsForRange(input.machineId, start, end);
   const bookingRef = doc(bookingsCol(ctx.db, input.houseId));
 
   const overlaps = (clash: { displayName?: string; startAt?: Timestamp }) => {
     const who = clash.displayName ?? "someone";
-    const when = clash.startAt ? ` at ${formatTime(clash.startAt.toDate())}` : "";
+    const when = clash.startAt
+      ? ` at ${clockIn(clash.startAt.toDate(), house.timeZone)}`
+      : "";
     fail(`That overlaps a booking by ${who}${when}.`);
   };
 
@@ -697,47 +786,224 @@ export async function createBooking(
     throw error;
   });
 
-  // "Starts in 15 minutes", on the phone and (if both switches are on) by email. Both
-  // ids are noted in one write so either can be called off if the booking is cancelled.
-  const remindAt = bookingReminderAt(start.getTime(), Date.now());
-  if (remindAt) {
-    const [pushId, reminderId] = await Promise.all([
-      schedulePushForMe(
-        ctx,
-        remindAt,
-        bookingSoonPush({
-          machineName,
-          bookingId: bookingRef.id,
-          start,
-          timeZone: house.timeZone,
-        }),
-      ),
-      house.emailReminders === true && member.emailReminders === true
-        ? scheduleBookingReminder(
-            {
-              to: member.email,
-              from: house.emailFrom,
-              displayName: member.displayName,
-              machineName,
-              houseName: house.name,
-              startsAt: start,
-              endsAt: end,
-              timeZone: house.timeZone,
-              accent: machineColorOf,
-            },
-            remindAt,
-          )
-        : Promise.resolve(null),
-    ]);
-    const ids = { ...(pushId ? { pushId } : {}), ...(reminderId ? { reminderId } : {}) };
-    if (Object.keys(ids).length > 0) {
-      await updateDoc(bookingRef, ids).catch((error: unknown) => {
-        console.error("store reminder ids", error);
-      });
-    }
-  }
+  await scheduleBookingNotifications(ctx, {
+    house,
+    member,
+    bookingId: bookingRef.id,
+    machineName,
+    machineColor: machineColorOf,
+    start,
+    end,
+  });
 
   return { bookingId: bookingRef.id };
+}
+
+/**
+ * Everything a booking sends its booker: "in 15 minutes" (phone, and email when both
+ * switches are on); "it has started, start it" at the start and every five minutes;
+ * and "released" (phone and email) at fifteen minutes if they never started. All carry
+ * the booking's label, so starting the machine or cancelling the booking calls every
+ * one of them off.
+ *
+ * Marks the booking scheduled when anything was handed over, so the catch-up never
+ * does it twice. Left unmarked when nothing could be (no devices, email off), so it is
+ * picked up later, for instance once this person turns notifications on.
+ */
+async function scheduleBookingNotifications(
+  ctx: ServerContext,
+  input: {
+    house: House;
+    member: Member;
+    bookingId: string;
+    machineName: string;
+    machineColor?: string;
+    start: Date;
+    end: Date;
+  },
+): Promise<boolean> {
+  const { house, member, bookingId, machineName, start, end } = input;
+  const label = bookingLabel(bookingId);
+  const emailOn =
+    remindersEnabled() && house.emailReminders === true && member.emailReminders === true;
+  const targets = schedulingConfigured() ? await myPushTargets(ctx).catch(() => []) : [];
+  const at = (minutes: number) => new Date(start.getTime() + minutes * 60_000);
+  const due = (when: Date) => when.getTime() > Date.now() + 30_000;
+  const releasedAt = at(NO_SHOW_MINUTES);
+  const remindAt = bookingReminderAt(start.getTime(), Date.now());
+
+  // Nothing could reach them (no device, email off, or it is all in the past): leave it
+  // unmarked, so it is picked up once they have a way to be reached.
+  const anythingDue = [remindAt, at(0), releasedAt].some((when) => when && due(when));
+  if (!anythingDue || (targets.length === 0 && !emailOn)) return false;
+
+  // Claim it first. Only if the mark is saved does anything get scheduled, so a refused
+  // write (rules not deployed, a race with another tab) can never schedule twice.
+  const claimed = await updateDoc(bookingDoc(ctx.db, house.id, bookingId), {
+    scheduled: true,
+  })
+    .then(() => true)
+    .catch((error: unknown) => {
+      console.error("claim booking notifications", error);
+      return false;
+    });
+  if (!claimed) return false;
+
+  const releaseEmail =
+    emailOn && schedulingConfigured() && due(releasedAt)
+      ? await renderBookingReleasedEmail({
+          to: member.email,
+          from: house.emailFrom,
+          displayName: member.displayName,
+          machineName,
+          houseName: house.name,
+          startsAt: start,
+          endsAt: end,
+          timeZone: house.timeZone,
+          accent: input.machineColor,
+        })
+      : null;
+
+  const pushes: Promise<string | null>[] = [];
+  if (targets.length > 0) {
+    if (remindAt) {
+      pushes.push(
+        schedulePush(
+          remindAt,
+          {
+            payload: bookingSoonPush({
+              machineName,
+              bookingId,
+              start,
+              timeZone: house.timeZone,
+            }),
+            targets,
+          },
+          { label },
+        ),
+      );
+    }
+    for (const minutes of [0, NUDGE_EVERY_MINUTES, 2 * NUDGE_EVERY_MINUTES]) {
+      if (!due(at(minutes))) continue;
+      pushes.push(
+        schedulePush(
+          at(minutes),
+          {
+            payload: bookingStartedPush({
+              machineName,
+              bookingId,
+              minutesLeft: NO_SHOW_MINUTES - minutes,
+            }),
+            targets,
+          },
+          { label },
+        ),
+      );
+    }
+  }
+  if (due(releasedAt) && (targets.length > 0 || releaseEmail)) {
+    pushes.push(
+      schedulePush(
+        releasedAt,
+        {
+          payload: bookingReleasedPush({
+            machineName,
+            bookingId,
+            releasedAt,
+            timeZone: house.timeZone,
+          }),
+          targets,
+          ...(releaseEmail ? { email: releaseEmail } : {}),
+        },
+        { label },
+      ),
+    );
+  }
+
+  const [reminderId, ...pushIds] = await Promise.all([
+    emailOn && remindAt
+      ? scheduleBookingReminder(
+          {
+            to: member.email,
+            from: house.emailFrom,
+            displayName: member.displayName,
+            machineName,
+            houseName: house.name,
+            startsAt: start,
+            endsAt: end,
+            timeZone: house.timeZone,
+            accent: input.machineColor,
+          },
+          remindAt,
+        )
+      : Promise.resolve(null),
+    ...pushes,
+  ]);
+
+  // The email's id, so it can be called off if the booking is cancelled.
+  if (reminderId) {
+    await updateDoc(bookingDoc(ctx.db, house.id, bookingId), { reminderId }).catch(
+      (error: unknown) => console.error("store reminder id", error),
+    );
+  }
+  return Boolean(reminderId) || pushIds.some(Boolean);
+}
+
+/**
+ * Schedules the notifications for the caller's own upcoming bookings that have none
+ * yet: ones made before notifications existed, or while they had no device. Run when
+ * the app opens and when notifications are turned on. Only ever for the caller,
+ * because only they can read their devices.
+ */
+export async function catchUpNotifications(
+  ctx: ServerContext,
+  input: { houseId: string },
+) {
+  const { house, member } = await requireMember(ctx, input.houseId);
+  if (!schedulingConfigured() && !remindersEnabled()) return { scheduled: 0 };
+
+  const now = Date.now();
+  const mine = await getDocs(
+    query(bookingsCol(ctx.db, input.houseId), where("uid", "==", member.uid), limit(50)),
+  );
+  const pending = mine.docs.filter((snap) => {
+    const booking = snap.data() as Omit<Booking, "id"> & {
+      scheduled?: boolean;
+      pushId?: string;
+      reminderId?: string;
+    };
+    return (
+      booking.endAt.toMillis() > now &&
+      !booking.checkedInAt &&
+      // Already handled: by this, or by the notifications of a booking made since.
+      !booking.scheduled &&
+      !booking.pushId &&
+      !booking.reminderId &&
+      !isNoShow(booking, now)
+    );
+  });
+  if (pending.length === 0) return { scheduled: 0 };
+
+  const machines = await getDocs(query(machinesCol(ctx.db, input.houseId), limit(50)));
+  const machineById = new Map(machines.docs.map((d) => [d.id, d.data() as Machine]));
+
+  let scheduled = 0;
+  for (const snap of pending) {
+    const booking = snap.data() as Omit<Booking, "id">;
+    const machine = machineById.get(booking.machineId);
+    if (!machine) continue;
+    const done = await scheduleBookingNotifications(ctx, {
+      house,
+      member,
+      bookingId: snap.id,
+      machineName: machine.name,
+      machineColor: machine.color,
+      start: booking.startAt.toDate(),
+      end: booking.endAt.toDate(),
+    });
+    if (done) scheduled++;
+  }
+  return { scheduled };
 }
 
 export async function cancelBooking(
@@ -764,7 +1030,7 @@ export async function cancelBooking(
   await batch.commit();
 
   // Its "starts soon" reminders would now be about nothing.
-  const { pushId, reminderId } = booking as { pushId?: unknown; reminderId?: unknown };
+  const { reminderId } = booking as { reminderId?: unknown };
   if (typeof reminderId === "string" && booking.startAt.toMillis() > Date.now()) {
     const ownerEmail =
       booking.uid === member.uid
@@ -772,16 +1038,8 @@ export async function cancelBooking(
         : await emailOf(ctx, input.houseId, booking.uid);
     await cancelScheduledEmail(reminderId, ownerEmail);
   }
-  if (typeof pushId === "string" && booking.startAt.toMillis() > Date.now()) {
-    await cancelPush(
-      pushId,
-      bookingSoonPush({
-        machineName: "",
-        bookingId: input.bookingId,
-        start: booking.startAt.toDate(),
-      }).tag,
-    );
-  }
+  // Everything still due about it: the reminder, the nudges, the release notice.
+  if (schedulingConfigured()) await cancelLabelled(bookingLabel(input.bookingId));
 }
 
 /**
@@ -790,8 +1048,91 @@ export async function cancelBooking(
  * entries older than the retention window. Bounded so one call stays well under
  * Firestore's 500-write batch limit.
  */
+/**
+ * Deletes bookings nobody started within {@link NO_SHOW_MINUTES} of their start, with
+ * their slot locks, so the time is genuinely free. On one machine before booking or
+ * starting it, or across the house when the app tidies up. The rules allow any member
+ * this, and only for a booking that really has lapsed.
+ */
+async function releaseLapsed(
+  ctx: ServerContext,
+  houseId: string,
+  machineId?: string,
+): Promise<number> {
+  const now = Date.now();
+  const snaps = await getDocs(
+    query(
+      bookingsCol(ctx.db, houseId),
+      where("startAt", ">=", Timestamp.fromMillis(now - MAX_BOOKING_MINUTES * 60_000)),
+      where("startAt", "<=", Timestamp.fromMillis(now - NO_SHOW_MINUTES * 60_000)),
+      limit(50),
+    ),
+  ).catch((error: unknown) => {
+    console.error("find lapsed bookings", error);
+    return null;
+  });
+  const lapsed = (snaps?.docs ?? []).filter((snap) => {
+    const booking = snap.data() as Omit<Booking, "id">;
+    return (!machineId || booking.machineId === machineId) && isNoShow(booking, now);
+  });
+  if (lapsed.length === 0) return 0;
+
+  const batch = writeBatch(ctx.db);
+  for (const snap of lapsed) {
+    const booking = snap.data() as Omit<Booking, "id">;
+    batch.delete(snap.ref);
+    for (const id of slotIdsForRange(
+      booking.machineId,
+      booking.startAt.toDate(),
+      booking.endAt.toDate(),
+    )) {
+      batch.delete(slotDoc(ctx.db, houseId, id));
+    }
+  }
+  await batch.commit().catch((error: unknown) => {
+    // Someone else got there first, or it was started meanwhile. Either way it is fine.
+    console.error("release lapsed bookings", error);
+  });
+  return lapsed.length;
+}
+
+/**
+ * Starting a machine checks in the caller's booking for it, if one has started (or
+ * starts within the next {@link NO_SHOW_MINUTES} minutes): its nudges and release
+ * notice are cancelled, and it no longer lapses.
+ */
+async function checkIn(
+  ctx: ServerContext,
+  houseId: string,
+  machineId: string,
+  uid: string,
+): Promise<void> {
+  const now = Date.now();
+  const mine = await getDocs(
+    query(bookingsCol(ctx.db, houseId), where("uid", "==", uid), limit(50)),
+  ).catch(() => null);
+  const due = (mine?.docs ?? []).filter((snap) => {
+    const booking = snap.data() as Omit<Booking, "id">;
+    return (
+      booking.machineId === machineId &&
+      !booking.checkedInAt &&
+      booking.startAt.toMillis() - NO_SHOW_MINUTES * 60_000 <= now &&
+      booking.endAt.toMillis() > now
+    );
+  });
+  await Promise.all(
+    due.map(async (snap) => {
+      await updateDoc(snap.ref, { checkedInAt: serverTimestamp() }).catch(
+        (error: unknown) => console.error("check in", error),
+      );
+      if (schedulingConfigured()) await cancelLabelled(bookingLabel(snap.id));
+    }),
+  );
+}
+
 export async function pruneOldRecords(ctx: ServerContext, input: { houseId: string }) {
   await requireMember(ctx, input.houseId);
+  await releaseLapsed(ctx, input.houseId);
   const cutoff = Timestamp.fromMillis(
     Date.now() - SESSION_RETENTION_DAYS * 24 * 60 * 60 * 1000,
   );
@@ -835,6 +1176,94 @@ export async function pruneOldRecords(ctx: ServerContext, input: { houseId: stri
 
 /* ------------------------------------------------------------------ notifications */
 
+/**
+ * "Ada emptied your Washer" for the owner and "You emptied Mo's Washer" for Ada, by
+ * phone and by email. Everything that needs reading is read now, while signed in as
+ * Ada; the sending happens after the response, so pressing Emptied stays quick.
+ * Each email still respects its recipient's own switch.
+ */
+async function tellAboutEmptying(
+  ctx: ServerContext,
+  input: {
+    house: House;
+    houseId: string;
+    emptier: Member;
+    ownerUid: string;
+    ownerName: string;
+    ownerPush: unknown;
+    machineName: string;
+    machineColor?: string;
+    sessionId: string;
+    stopped: boolean;
+  },
+) {
+  const { house, emptier } = input;
+  const canPush = pushConfigured();
+  const canEmail = remindersEnabled() && house.emailReminders === true;
+  if (!canPush && !canEmail) return;
+
+  const at = new Date();
+  // Only opens for the cycle and owner it was sealed for, so a copy is useless.
+  const opened = unseal(input.ownerPush, `${input.ownerUid}:${input.sessionId}`);
+  const ownerTargets = Array.isArray(opened) ? opened.filter(isPushTarget) : [];
+  const emptierTargets = canPush ? await myPushTargets(ctx).catch(() => []) : [];
+  const owner = canEmail
+    ? ((await getDoc(memberDoc(ctx.db, input.houseId, input.ownerUid))
+        .then((snap) => snap.data() as Member | undefined)
+        .catch(() => undefined)) ?? null)
+    : null;
+
+  const common = {
+    ownerName: input.ownerName,
+    emptierName: emptier.displayName,
+    machineName: input.machineName,
+    stopped: input.stopped,
+    timeZone: house.timeZone,
+  };
+
+  const email = (role: "owner" | "emptier", recipient: Member | null) =>
+    canEmail && recipient?.email && recipient.emailReminders === true
+      ? sendEmptiedEmail({
+          ...common,
+          role,
+          to: recipient.email,
+          from: house.emailFrom,
+          recipientName: recipient.displayName,
+          houseName: house.name,
+          at,
+          accent: input.machineColor,
+        })
+      : null;
+
+  later(async () => {
+    await Promise.all([
+      sendPush(
+        ownerTargets,
+        emptiedPush({ ...common, to: "owner", sessionId: input.sessionId, at }),
+      ),
+      sendPush(
+        emptierTargets,
+        emptiedPush({ ...common, to: "emptier", sessionId: input.sessionId, at }),
+      ),
+      email("owner", owner),
+      email("emptier", emptier),
+    ]).catch((error: unknown) => console.error("tell about emptying", error));
+  });
+}
+
+/**
+ * Work that should not hold up the response, such as notifications. Inside a request
+ * Next runs it once the response has gone; anywhere else (tests, scripts) it simply
+ * runs in the background.
+ */
+function later(work: () => Promise<void>) {
+  try {
+    after(work);
+  } catch {
+    void work().catch((error: unknown) => console.error("later", error));
+  }
+}
+
 /** A member's address, to check a scheduled email is theirs before calling it off. */
 async function emailOf(
   ctx: ServerContext,
@@ -874,11 +1303,17 @@ async function schedulePushForMe(
   ctx: ServerContext,
   at: Date,
   payload: PushPayload,
+  options: { chase?: PushChase; label?: string } = {},
 ): Promise<string | null> {
   if (!schedulingConfigured()) return null;
   try {
     const targets = await myPushTargets(ctx);
-    return await schedulePush(at, { payload, targets });
+    if (targets.length === 0) return null;
+    return await schedulePush(
+      at,
+      { payload, targets, chase: options.chase },
+      { label: options.label },
+    );
   } catch (error) {
     console.error("schedule push", error);
     return null;
@@ -1141,6 +1576,18 @@ export async function updateSchedule(
 }
 
 /** Each person's own choice, inside whatever the admin allows for the house. */
+/** Phone notifications on or off for the caller's account, kept like the email switch. */
+export async function setMyPushReminders(
+  ctx: ServerContext,
+  input: { houseId: string; enabled: boolean },
+) {
+  const { member } = await requireMember(ctx, input.houseId);
+  if (typeof input.enabled !== "boolean") fail("That setting has to be on or off.");
+  await updateDoc(memberDoc(ctx.db, input.houseId, member.uid), {
+    pushReminders: input.enabled,
+  });
+}
+
 export async function setMyEmailReminders(
   ctx: ServerContext,
   input: { houseId: string; enabled: boolean },
@@ -1330,20 +1777,10 @@ export async function removeMember(
   await Promise.all(
     bookings.docs.map(async (snap) => {
       const booking = snap.data() as Omit<Booking, "id"> & {
-        pushId?: unknown;
         reminderId?: unknown;
       };
       if (booking.startAt.toMillis() <= Date.now()) return;
-      if (typeof booking.pushId === "string") {
-        await cancelPush(
-          booking.pushId,
-          bookingSoonPush({
-            machineName: "",
-            bookingId: snap.id,
-            start: booking.startAt.toDate(),
-          }).tag,
-        );
-      }
+      if (schedulingConfigured()) await cancelLabelled(bookingLabel(snap.id));
       if (typeof booking.reminderId === "string") {
         await cancelScheduledEmail(booking.reminderId, removed.email);
       }

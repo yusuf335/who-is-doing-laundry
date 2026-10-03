@@ -3,6 +3,7 @@
 import { IconBellRinging, IconDeviceMobileShare } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { useHouse } from "@/components/providers/house-provider";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -18,40 +19,28 @@ import {
 import { BOOKING_LEAD_MINUTES, deviceLabel } from "@/lib/push-message";
 import { runAction } from "@/lib/run-action";
 import {
+  catchUpNotificationsAction,
   removePushDeviceAction,
   savePushDeviceAction,
   sendTestPushAction,
+  setMyPushRemindersAction,
 } from "@/server/actions";
 
 /**
- * Notifications on this phone or computer: when your cycle finishes, and shortly before
- * your bookings. Per device, because permission is given per browser.
+ * Phone notifications: when your cycle finishes, and around your bookings. The switch is
+ * an account setting, saved like email, so it stays on through signing out; each device
+ * also needs the browser's permission once, which is what "Use on this device" asks for.
  */
 export function PhoneNotifications() {
+  const { houseId, member } = useHouse();
+  const wanted = member?.pushReminders === true;
   const [state, setState] = useState<PushState | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let live = true;
-    void pushState().then(async (next) => {
-      if (!live) return;
-      setState(next);
-      // Already on here: make sure the server still knows this device, in case it was
-      // forgotten since. Quietly when it works; when the server refuses (no keys, too
-      // many devices) the switch must not keep claiming notifications are on.
-      if (next === "on") {
-        const subscription = await currentSubscription();
-        if (!subscription) return;
-        const result = await savePushDeviceAction({
-          subscription: subscription.toJSON(),
-          label: deviceLabel(navigator.userAgent),
-        });
-        if (!result.ok && live) {
-          await unsubscribe();
-          setState("off");
-          toast.error(result.error);
-        }
-      }
+    void pushState().then((next) => {
+      if (live) setState(next);
     });
     return () => {
       live = false;
@@ -75,8 +64,17 @@ export function PhoneNotifications() {
         await unsubscribe();
         throw error;
       }
+      if (houseId) {
+        await runAction(() => setMyPushRemindersAction({ houseId, enabled: true }));
+      }
       setState("on");
-      toast.success("Notifications are on for this device.");
+      toast.success("Notifications are on.");
+      // Bookings you already have get their reminders now, not only new ones.
+      if (houseId) {
+        void runAction(() => catchUpNotificationsAction({ houseId })).catch(
+          (error: unknown) => console.error("catch up notifications", error),
+        );
+      }
     } catch (error) {
       toast.error(errorMessage(error, "Could not turn notifications on."));
     } finally {
@@ -89,8 +87,11 @@ export function PhoneNotifications() {
     try {
       const endpoint = await unsubscribe();
       if (endpoint) await runAction(() => removePushDeviceAction({ endpoint }));
+      if (houseId) {
+        await runAction(() => setMyPushRemindersAction({ houseId, enabled: false }));
+      }
       setState("off");
-      toast.success("No more notifications on this device.");
+      toast.success("Notifications are off.");
     } catch (error) {
       toast.error(errorMessage(error, "Could not turn notifications off."));
     } finally {
@@ -165,25 +166,36 @@ export function PhoneNotifications() {
     );
   }
 
-  const on = state === "on";
+  const here = state === "on";
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
         <Switch
           id="phone-notifications"
-          checked={on}
+          checked={wanted || here}
           disabled={busy}
           onCheckedChange={(next) => (next ? turnOn() : turnOff())}
         />
         <Label htmlFor="phone-notifications" className="text-sm font-normal">
-          {on ? "Notifications on for this device" : "Notify me on this device"}
+          {wanted || here ? "Phone notifications on" : "Notify me on my phone"}
         </Label>
       </div>
       <p className="text-muted-foreground text-xs">
-        When your cycle finishes, and {BOOKING_LEAD_MINUTES} minutes before each of your
-        bookings. Turn it on on every phone or computer you want them on.
+        When your cycle finishes, {BOOKING_LEAD_MINUTES} minutes before each booking, and
+        while a machine of yours waits to be emptied. Saved on your account, so it stays
+        on when you sign out and back in.
       </p>
-      {on && (
+      {wanted && !here && (
+        <div className="bg-muted/60 flex flex-wrap items-center gap-3 rounded-lg p-3 text-sm">
+          <p className="min-w-0 flex-1">
+            On for your account, but not on this device yet.
+          </p>
+          <Button className="h-10" disabled={busy} onClick={turnOn}>
+            Use on this device
+          </Button>
+        </div>
+      )}
+      {here && (
         <Button variant="outline" className="h-10" disabled={busy} onClick={test}>
           <IconBellRinging />
           Send a test

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { bookingSoonEmail, cycleDoneEmail, testEmail } from "@/emails/build";
+import {
+  bookingSoonEmail,
+  cycleDoneEmail,
+  emptiedEmail,
+  testEmail,
+} from "@/emails/build";
 
 const zone = "America/Edmonton"; // UTC-6 in October
 const at = (h: number, m: number) => new Date(Date.UTC(2026, 9, 3, h + 6, m)); // local h:m
@@ -89,5 +94,49 @@ describe("testEmail", () => {
     expect(text).toMatch(/email reminders reach you/i);
     expect(text).toContain("15 minutes before each of your bookings");
     expect(html).not.toContain("<Maple>");
+  });
+});
+
+describe("emptiedEmail", () => {
+  const base = {
+    ownerName: "Mo Farah",
+    emptierName: "Ada Lovelace",
+    machineName: "Washer",
+    houseName: "Maple",
+    at: at(15, 45),
+    timeZone: zone,
+    stopped: false,
+  };
+
+  it("tells the owner who emptied it and when", async () => {
+    const { subject, text } = await emptiedEmail({
+      ...base,
+      role: "owner",
+      recipientName: "Mo Farah",
+    });
+    expect(subject).toBe("Ada emptied your Washer");
+    expect(text).toContain("Hi Mo,");
+    expect(text).toContain("3:45 PM by Ada");
+  });
+
+  it("confirms it to whoever emptied it", async () => {
+    const { subject, text } = await emptiedEmail({
+      ...base,
+      role: "emptier",
+      recipientName: "Ada Lovelace",
+    });
+    expect(subject).toBe("You emptied Mo's Washer");
+    expect(text).toContain("Mo has been told");
+  });
+
+  it("says when it was stopped before it finished", async () => {
+    const { subject, text } = await emptiedEmail({
+      ...base,
+      role: "owner",
+      recipientName: "Mo",
+      stopped: true,
+    });
+    expect(subject).toBe("Ada stopped your Washer");
+    expect(text).toContain("may still be inside");
   });
 });

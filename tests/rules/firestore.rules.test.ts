@@ -720,10 +720,53 @@ describe("sessions (the 7-day laundry log)", () => {
     );
   });
 
+  it("records who emptied it, and only ever as themselves", async () => {
+    const path = `${housePath}/sessions/s1`; // MEMBER's cycle
+    await assertSucceeds(
+      updateDoc(doc(dbAs(OTHER), path), {
+        endedAt: Timestamp.now(),
+        endedByUid: OTHER,
+        endedByName: "Olu",
+      }),
+    );
+    await assertFails(
+      updateDoc(doc(dbAs(OTHER), path), {
+        endedAt: Timestamp.now(),
+        endedByUid: ADMIN,
+        endedByName: "Someone else",
+      }),
+    );
+    await assertFails(
+      updateDoc(doc(dbAs(OTHER), path), {
+        endedAt: Timestamp.now(),
+        endedByUid: OTHER,
+        endedByName: 42,
+      }),
+    );
+    // Closed once: nobody can move the time or claim it afterwards, not even the
+    // person who closed it.
+    await assertFails(updateDoc(doc(dbAs(OTHER), path), { endedAt: Timestamp.now() }));
+    await assertFails(
+      updateDoc(doc(dbAs(MEMBER), path), {
+        endedAt: Timestamp.now(),
+        endedByUid: MEMBER,
+        endedByName: "Mo",
+      }),
+    );
+  });
+
   it("lets anyone in the house close a cycle, but change nothing else", async () => {
+    // Closing names who closed it; a bare time with no name is refused.
+    await assertFails(
+      updateDoc(doc(dbAs(OTHER), `${housePath}/sessions/s1`), {
+        endedAt: Timestamp.now(),
+      }),
+    );
     await assertSucceeds(
       updateDoc(doc(dbAs(OTHER), `${housePath}/sessions/s1`), {
         endedAt: Timestamp.now(),
+        endedByUid: OTHER,
+        endedByName: "Olu",
       }),
     );
     await assertSucceeds(
@@ -788,6 +831,80 @@ describe("clearing a removed member's pointer", () => {
   });
 });
 
+describe("marking a booking's notifications scheduled", () => {
+  it("lets only its owner mark it, once, and only as true", async () => {
+    const path = `${housePath}/bookings/b1`; // MEMBER's booking
+    await assertFails(updateDoc(doc(dbAs(ADMIN), path), { scheduled: true }));
+    await assertFails(updateDoc(doc(dbAs(MEMBER), path), { scheduled: false }));
+    await assertSucceeds(
+      updateDoc(doc(dbAs(MEMBER), path), { scheduled: true, reminderId: "re_1" }),
+    );
+    await assertFails(updateDoc(doc(dbAs(MEMBER), path), { scheduled: true }));
+  });
+});
+
+describe("released and checked-in bookings", () => {
+  const QUARTER = 15 * 60_000;
+  const seed = async (id: string, startMs: number, extra: Record<string, unknown> = {}) =>
+    testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const db = ctx.firestore();
+      const fields = {
+        machineId: MACHINE,
+        uid: MEMBER,
+        displayName: "Mo",
+        startAt: Timestamp.fromMillis(startMs),
+        endAt: Timestamp.fromMillis(startMs + 4 * QUARTER),
+      };
+      await setDoc(doc(db, `${housePath}/bookings/${id}`), {
+        ...fields,
+        createdAt: Timestamp.now(),
+        ...extra,
+      });
+      await setDoc(doc(db, `${housePath}/slots/${id}-slot`), {
+        ...fields,
+        bookingId: id,
+        slotIndex: 0,
+      });
+    });
+
+  it("lets any member delete a booking nobody started, with its locks", async () => {
+    await seed("lapsed", grid(Date.now()) - 2 * QUARTER);
+    const db = dbAs(OTHER);
+    // A lock on its own is never fair game.
+    await assertFails(deleteDoc(doc(db, `${housePath}/slots/lapsed-slot`)));
+    const batch = writeBatch(db);
+    batch.delete(doc(db, `${housePath}/bookings/lapsed`));
+    batch.delete(doc(db, `${housePath}/slots/lapsed-slot`));
+    await assertSucceeds(batch.commit());
+  });
+
+  it("protects a booking that has not lapsed, or was checked in", async () => {
+    await seed("fresh", grid(Date.now()));
+    await seed("checked", grid(Date.now()) - 2 * QUARTER, {
+      checkedInAt: Timestamp.now(),
+    });
+    await assertFails(deleteDoc(doc(dbAs(OTHER), `${housePath}/bookings/fresh`)));
+    await assertFails(deleteDoc(doc(dbAs(OTHER), `${housePath}/bookings/checked`)));
+  });
+
+  it("lets only the booker check in, once, at the server's time", async () => {
+    await seed("mine", grid(Date.now()));
+    const path = `${housePath}/bookings/mine`;
+    await assertFails(
+      updateDoc(doc(dbAs(OTHER), path), { checkedInAt: serverTimestamp() }),
+    );
+    await assertFails(
+      updateDoc(doc(dbAs(MEMBER), path), { checkedInAt: Timestamp.fromMillis(0) }),
+    );
+    await assertSucceeds(
+      updateDoc(doc(dbAs(MEMBER), path), { checkedInAt: serverTimestamp() }),
+    );
+    await assertFails(
+      updateDoc(doc(dbAs(MEMBER), path), { checkedInAt: serverTimestamp() }),
+    );
+  });
+});
+
 describe("push devices", () => {
   const device = (extra: Record<string, unknown> = {}) => ({
     endpoint: "https://push.example.com/abc",
@@ -825,11 +942,29 @@ describe("push devices", () => {
 });
 
 describe("notification ids on sessions and bookings", () => {
-  it("lets only a session's owner note its notification id, once", async () => {
+  it("lets only a session's owner note its notification id and sealed devices, once", async () => {
     const path = `${housePath}/sessions/s1`; // MEMBER's session
     await assertFails(updateDoc(doc(dbAs(ADMIN), path), { pushId: "msg_0" }));
-    await assertSucceeds(updateDoc(doc(dbAs(MEMBER), path), { pushId: "msg_1" }));
+    await assertFails(updateDoc(doc(dbAs(ADMIN), path), { ownerPush: "sealed" }));
+    await assertSucceeds(
+      updateDoc(doc(dbAs(MEMBER), path), { pushId: "msg_1", ownerPush: "sealed" }),
+    );
     await assertFails(updateDoc(doc(dbAs(MEMBER), path), { pushId: "msg_2" }));
+    await assertFails(updateDoc(doc(dbAs(MEMBER), path), { ownerPush: "other" }));
+  });
+
+  it("never takes sealed devices on a new cycle", async () => {
+    await assertFails(
+      setDoc(doc(dbAs(MEMBER), `${housePath}/sessions/s9`), {
+        machineId: MACHINE,
+        uid: MEMBER,
+        displayName: "Mo",
+        startedAt: Timestamp.now(),
+        expectedEndAt: Timestamp.now(),
+        endedAt: null,
+        ownerPush: "sealed",
+      }),
+    );
   });
 
   it("lets only a booking's owner note its notification id, and nothing else", async () => {
