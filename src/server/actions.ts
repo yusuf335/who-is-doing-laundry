@@ -86,6 +86,23 @@ export async function cancelBookingAction(input: { houseId: string; bookingId: s
   return act((ctx) => laundry.cancelBooking(ctx, input));
 }
 
+/* notifications */
+
+export async function savePushDeviceAction(input: {
+  subscription: unknown;
+  label: string;
+}) {
+  return act((ctx) => laundry.savePushDevice(ctx, input));
+}
+
+export async function removePushDeviceAction(input: { endpoint: string }) {
+  return act((ctx) => laundry.removePushDevice(ctx, input));
+}
+
+export async function sendTestPushAction() {
+  return act((ctx) => laundry.sendTestPush(ctx));
+}
+
 export async function pruneOldRecordsAction(input: { houseId: string }) {
   return act((ctx) => laundry.pruneOldRecords(ctx, input));
 }

@@ -4,6 +4,11 @@ import { collection, doc, type Firestore } from "firebase/firestore";
 // (live listeners) and the FirebaseServerApp inside server actions (all writes).
 
 export const userDoc = (db: Firestore, uid: string) => doc(db, "users", uid);
+/** The browsers someone has allowed to show notifications. Theirs alone. */
+export const pushDevicesCol = (db: Firestore, uid: string) =>
+  collection(db, "users", uid, "pushDevices");
+export const pushDeviceDoc = (db: Firestore, uid: string, deviceId: string) =>
+  doc(db, "users", uid, "pushDevices", deviceId);
 export const inviteCodeDoc = (db: Firestore, code: string) =>
   doc(db, "inviteCodes", code);
 

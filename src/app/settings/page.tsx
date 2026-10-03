@@ -37,6 +37,7 @@ import { toast } from "sonner";
 import { useHouse } from "@/components/providers/house-provider";
 import { LoadError } from "@/components/load-error";
 import { MyNotifications } from "@/components/my-notifications";
+import { PhoneNotifications } from "@/components/phone-notifications";
 import { RequireHouse } from "@/components/require-house";
 import { useRouter } from "next/navigation";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -137,13 +138,17 @@ function Settings() {
     <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Email me</CardTitle>
+          <CardTitle className="text-base">Notifications</CardTitle>
           <CardDescription>
-            Yours alone. Changing this does nothing to your housemates.
+            Yours alone. Changing these does nothing to your housemates.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <MyNotifications />
+        <CardContent className="space-y-4">
+          <PhoneNotifications />
+          <div className="space-y-2 border-t pt-4">
+            <p className="text-sm font-medium">Email</p>
+            <MyNotifications />
+          </div>
         </CardContent>
       </Card>
 

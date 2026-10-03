@@ -764,6 +764,66 @@ describe("sessions (the 7-day laundry log)", () => {
   });
 });
 
+describe("push devices", () => {
+  const device = (extra: Record<string, unknown> = {}) => ({
+    endpoint: "https://push.example.com/abc",
+    keys: { p256dh: "BNcRdre", auth: "tBHItJI" },
+    label: "iPhone",
+    createdAt: Timestamp.now(),
+    ...extra,
+  });
+  const path = `users/${MEMBER}/pushDevices/d1`;
+
+  it("lets only the owner store, read and remove their devices", async () => {
+    await assertSucceeds(setDoc(doc(dbAs(MEMBER), path), device()));
+    await assertSucceeds(getDoc(doc(dbAs(MEMBER), path)));
+    await assertSucceeds(
+      getDocs(query(collection(dbAs(MEMBER), `users/${MEMBER}/pushDevices`), limit(10))),
+    );
+    await assertFails(getDoc(doc(dbAs(ADMIN), path)));
+    await assertFails(setDoc(doc(dbAs(ADMIN), path), device()));
+    await assertFails(deleteDoc(doc(dbAs(ADMIN), path)));
+    await assertSucceeds(deleteDoc(doc(dbAs(MEMBER), path)));
+  });
+
+  it("refuses anything that is not a plain https subscription", async () => {
+    await assertFails(
+      setDoc(doc(dbAs(MEMBER), path), device({ endpoint: "http://push.example.com" })),
+    );
+    await assertFails(setDoc(doc(dbAs(MEMBER), path), device({ extra: true })));
+    await assertFails(
+      setDoc(doc(dbAs(MEMBER), path), device({ keys: { p256dh: "x", auth: "y", z: 1 } })),
+    );
+    await assertFails(
+      getDocs(query(collection(dbAs(MEMBER), `users/${MEMBER}/pushDevices`), limit(50))),
+    );
+  });
+});
+
+describe("notification ids on sessions and bookings", () => {
+  it("lets only a session's owner note its notification id, once", async () => {
+    const path = `${housePath}/sessions/s1`; // MEMBER's session
+    await assertFails(updateDoc(doc(dbAs(ADMIN), path), { pushId: "msg_0" }));
+    await assertSucceeds(updateDoc(doc(dbAs(MEMBER), path), { pushId: "msg_1" }));
+    await assertFails(updateDoc(doc(dbAs(MEMBER), path), { pushId: "msg_2" }));
+  });
+
+  it("lets only a booking's owner note its notification id, and nothing else", async () => {
+    const path = `${housePath}/bookings/b1`; // MEMBER's booking
+    await assertSucceeds(updateDoc(doc(dbAs(MEMBER), path), { pushId: "msg_1" }));
+    await assertFails(updateDoc(doc(dbAs(ADMIN), path), { pushId: "msg_2" }));
+    await assertFails(
+      updateDoc(doc(dbAs(MEMBER), path), {
+        pushId: "msg_3",
+        displayName: "Someone else",
+      }),
+    );
+    await assertFails(updateDoc(doc(dbAs(MEMBER), path), { pushId: 42 }));
+    // Once noted, it cannot be swapped for someone else's.
+    await assertFails(updateDoc(doc(dbAs(MEMBER), path), { pushId: "msg_4" }));
+  });
+});
+
 describe("bookings", () => {
   const start = Timestamp.fromMillis(grid(Date.now() + 3_600_000));
   const end = Timestamp.fromMillis(grid(Date.now() + 7_200_000));

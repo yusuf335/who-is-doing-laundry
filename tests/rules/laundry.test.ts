@@ -32,7 +32,9 @@ import {
   removeMachine,
   reorderMachines,
   removeMember,
+  removePushDevice,
   renameMachine,
+  savePushDevice,
   setMachineColor,
   setJoinApproval,
   startSession,
@@ -1419,6 +1421,65 @@ describe("machines admin", () => {
   });
 });
 type MachineTypeLoose = "washer" | "dryer";
+
+describe("push devices", () => {
+  const subscription = (n: number) => ({
+    endpoint: `https://push.example.com/device-${n}`,
+    keys: { p256dh: "BNcRdreALRFXTkOOUHK1EtK2", auth: "tBHItJI5svbpez7K" },
+  });
+  const saved = {
+    public: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
+    private: process.env.VAPID_PRIVATE_KEY,
+  };
+
+  beforeEach(() => {
+    process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY = "test-public";
+    process.env.VAPID_PRIVATE_KEY = "test-private";
+  });
+  afterAll(() => {
+    process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY = saved.public;
+    process.env.VAPID_PRIVATE_KEY = saved.private;
+  });
+
+  const devices = (uid: string) =>
+    raw(async (db) => (await getDocs(collection(db, `users/${uid}/pushDevices`))).docs);
+
+  it("stores a device once however often it subscribes, and forgets it", async () => {
+    await setupHouse();
+    await savePushDevice(member(), { subscription: subscription(1), label: "iPhone" });
+    await savePushDevice(member(), { subscription: subscription(1), label: "iPhone" });
+    expect(await devices(MEMBER)).toHaveLength(1);
+    await removePushDevice(member(), { endpoint: subscription(1).endpoint });
+    expect(await devices(MEMBER)).toHaveLength(0);
+  });
+
+  it("refuses a bad subscription and a runaway number of devices", async () => {
+    await setupHouse();
+    await expectLaundryError(
+      savePushDevice(member(), {
+        subscription: { endpoint: "http://insecure.example", keys: {} },
+        label: "x",
+      }),
+      "usable notification address",
+    );
+    for (let i = 0; i < 10; i++) {
+      await savePushDevice(member(), { subscription: subscription(i), label: `d${i}` });
+    }
+    await expectLaundryError(
+      savePushDevice(member(), { subscription: subscription(99), label: "one more" }),
+      "Notifications are on for 10 devices",
+    );
+  });
+
+  it("says so when the server has no keys", async () => {
+    delete process.env.VAPID_PRIVATE_KEY;
+    await setupHouse();
+    await expectLaundryError(
+      savePushDevice(member(), { subscription: subscription(1), label: "x" }),
+      "not set up",
+    );
+  });
+});
 
 describe("booking horizon", () => {
   it("refuses a booking that starts more than two weeks ahead", async () => {

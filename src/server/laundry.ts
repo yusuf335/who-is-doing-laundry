@@ -1,7 +1,9 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { FirebaseError } from "firebase/app";
 import {
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -33,11 +35,24 @@ import {
   membersCol,
   sessionDoc,
   sessionsCol,
+  pushDeviceDoc,
+  pushDevicesCol,
   slotDoc,
   userDoc,
 } from "@/lib/paths";
+import {
+  MAX_PUSH_DEVICES,
+  bookingReminderAt,
+  bookingSoonPush,
+  cycleDonePush,
+  isPushTarget,
+  type PushPayload,
+  type PushTarget,
+} from "@/lib/push-message";
 import { dayAccess, defaultSchedule } from "@/lib/schedule";
 import { parseSender } from "@/lib/reminder";
+import { pushConfigured, sendPush } from "@/server/push";
+import { cancelPush, schedulePush, schedulingConfigured } from "@/server/qstash";
 import { cancelScheduledEmail, scheduleCycleReminder } from "@/server/resend";
 import {
   MAX_BOOKING_MINUTES,
@@ -417,6 +432,7 @@ export async function startSession(
     expectedEndAt.toDate(),
   );
 
+  let machineName = "machine";
   const claimedBy = (machine: Omit<Machine, "id">) =>
     fail(
       `${machine.name} was just claimed by ${machine.currentSession?.displayName ?? "someone"}.`,
@@ -431,6 +447,7 @@ export async function startSession(
 
     if (!snap.exists()) fail("That machine no longer exists.");
     const machine = snap.data() as Omit<Machine, "id">;
+    machineName = machine.name;
     const longest = maxMinutesOf(machine);
     if (minutes > longest) {
       fail(`${machine.name} runs at most ${longest} minutes per cycle.`);
@@ -479,17 +496,28 @@ export async function startSession(
     throw error;
   });
 
+  // Only once the machine is ours: scheduling takes network round trips, and nothing
+  // about the claim should wait on them. Each is best effort.
+  const pushId = await schedulePushForMe(
+    ctx,
+    expectedEndAt.toDate(),
+    cycleDonePush({ machineName, sessionId: sessionRef.id }),
+  );
+  if (pushId) {
+    await updateDoc(sessionRef, { pushId }).catch((error: unknown) => {
+      // Without the id the notification cannot be called off early; a nuisance only.
+      console.error("store push id", error);
+    });
+  }
+
   // Two gates: the admin turns email on for the house, and each person opts in for
-  // themselves. The notification is the default channel; email is for whoever wants it.
+  // themselves. Phone notifications are the main channel; email is for whoever wants it.
   if (house.emailReminders !== true || member.emailReminders !== true) return;
 
-  // Only once the machine is ours: handing the reminder to Resend takes a network round
-  // trip, and nothing about the claim should wait on it.
-  const machineSnap = await getDoc(machineRef);
   const reminderId = await scheduleCycleReminder({
     to: member.email,
     displayName: member.displayName,
-    machineName: (machineSnap.data() as Machine | undefined)?.name ?? "machine",
+    machineName,
     houseName: house.name,
     finishesAt: expectedEndAt.toDate(),
     from: house.emailFrom,
@@ -514,6 +542,8 @@ export async function endSession(
   const { member, isAdmin } = await requireMember(ctx, input.houseId);
   const machineRef = machineDoc(ctx.db, input.houseId, input.machineId);
   let reminderToCancel: string | null = null;
+  let pushToCancel: string | null = null;
+  let pushTag = "";
 
   await runTransaction(ctx.db, async (tx) => {
     const snap = await tx.get(machineRef);
@@ -541,10 +571,16 @@ export async function endSession(
     if (session.expectedEndAt.toMillis() > Date.now()) {
       const pending = logSnap?.data()?.reminderId;
       if (typeof pending === "string") reminderToCancel = pending;
+      const pendingPush = logSnap?.data()?.pushId;
+      if (typeof pendingPush === "string" && session.sessionId) {
+        pushToCancel = pendingPush;
+        pushTag = cycleDonePush({ machineName: "", sessionId: session.sessionId }).tag;
+      }
     }
   });
 
   if (reminderToCancel) await cancelScheduledEmail(reminderToCancel);
+  if (pushToCancel) await cancelPush(pushToCancel, pushTag);
 }
 
 /* ------------------------------------------------------------------ bookings */
@@ -643,6 +679,25 @@ export async function createBooking(
     throw error;
   });
 
+  const remindAt = bookingReminderAt(start.getTime(), Date.now());
+  if (remindAt) {
+    const pushId = await schedulePushForMe(
+      ctx,
+      remindAt,
+      bookingSoonPush({
+        machineName,
+        bookingId: bookingRef.id,
+        start,
+        timeZone: house.timeZone,
+      }),
+    );
+    if (pushId) {
+      await updateDoc(bookingRef, { pushId }).catch((error: unknown) => {
+        console.error("store push id", error);
+      });
+    }
+  }
+
   return { bookingId: bookingRef.id };
 }
 
@@ -668,6 +723,19 @@ export async function cancelBooking(
     batch.delete(slotDoc(ctx.db, input.houseId, id));
   }
   await batch.commit();
+
+  // Its "starts soon" notification would now be about nothing.
+  const pushId = (booking as { pushId?: unknown }).pushId;
+  if (typeof pushId === "string" && booking.startAt.toMillis() > Date.now()) {
+    await cancelPush(
+      pushId,
+      bookingSoonPush({
+        machineName: "",
+        bookingId: input.bookingId,
+        start: booking.startAt.toDate(),
+      }).tag,
+    );
+  }
 }
 
 /**
@@ -717,6 +785,111 @@ export async function pruneOldRecords(ctx: ServerContext, input: { houseId: stri
   stale.forEach((snap) => batch.delete(snap.ref));
   await batch.commit();
   return { bookings: expired.size, sessions: stale.size };
+}
+
+/* ------------------------------------------------------------------ notifications */
+
+/** A stable id per browser, so subscribing twice updates one document. */
+function deviceId(endpoint: string): string {
+  return createHash("sha256").update(endpoint).digest("hex").slice(0, 40);
+}
+
+/** The caller's own devices, read as the caller. Nobody else's are ever readable. */
+async function myPushTargets(ctx: ServerContext): Promise<PushTarget[]> {
+  const snap = await getDocs(
+    query(pushDevicesCol(ctx.db, ctx.user.uid), limit(MAX_PUSH_DEVICES)),
+  );
+  return snap.docs
+    .map((d) => d.data())
+    .filter(isPushTarget)
+    .map(({ endpoint, keys }) => ({
+      endpoint,
+      keys: { p256dh: keys.p256dh, auth: keys.auth },
+    }));
+}
+
+/**
+ * Schedules a notification to every device the caller has allowed. The devices are read
+ * now, as the caller, and travel with the message, which is why delivery needs no key.
+ * A device switched on later only hears about things scheduled after that.
+ */
+async function schedulePushForMe(
+  ctx: ServerContext,
+  at: Date,
+  payload: PushPayload,
+): Promise<string | null> {
+  if (!schedulingConfigured()) return null;
+  try {
+    const targets = await myPushTargets(ctx);
+    return await schedulePush(at, { payload, targets });
+  } catch (error) {
+    console.error("schedule push", error);
+    return null;
+  }
+}
+
+async function forgetDevices(ctx: ServerContext, endpoints: string[]) {
+  await Promise.all(
+    endpoints.map((endpoint) =>
+      deleteDoc(pushDeviceDoc(ctx.db, ctx.user.uid, deviceId(endpoint))).catch(
+        (error: unknown) => console.error("forget push device", error),
+      ),
+    ),
+  );
+}
+
+/** Remembers this browser so cycles and bookings can notify it. */
+export async function savePushDevice(
+  ctx: ServerContext,
+  input: { subscription: unknown; label: string },
+) {
+  if (!pushConfigured()) fail("Phone notifications are not set up on this server yet.");
+  if (!isPushTarget(input.subscription)) {
+    fail("This browser did not give a usable notification address.");
+  }
+  const { endpoint, keys } = input.subscription;
+  const label =
+    (typeof input.label === "string" ? input.label.trim().slice(0, 60) : "") ||
+    "This device";
+
+  const id = deviceId(endpoint);
+  const existing = await getDocs(
+    query(pushDevicesCol(ctx.db, ctx.user.uid), limit(MAX_PUSH_DEVICES + 1)),
+  );
+  if (!existing.docs.some((d) => d.id === id) && existing.size >= MAX_PUSH_DEVICES) {
+    fail(
+      `Notifications are on for ${MAX_PUSH_DEVICES} devices already. Turn them off on one you no longer use.`,
+    );
+  }
+  await setDoc(pushDeviceDoc(ctx.db, ctx.user.uid, id), {
+    endpoint,
+    keys: { p256dh: keys.p256dh, auth: keys.auth },
+    label,
+    createdAt: Timestamp.now(),
+  });
+}
+
+/** Forgets this browser, so nothing more is sent to it. */
+export async function removePushDevice(ctx: ServerContext, input: { endpoint: string }) {
+  if (typeof input.endpoint !== "string" || !input.endpoint) fail("Nothing to turn off.");
+  await deleteDoc(pushDeviceDoc(ctx.db, ctx.user.uid, deviceId(input.endpoint)));
+}
+
+/** Sends a notification right now to every device the caller has allowed. */
+export async function sendTestPush(ctx: ServerContext) {
+  if (!pushConfigured()) fail("Phone notifications are not set up on this server yet.");
+  const targets = await myPushTargets(ctx);
+  if (targets.length === 0) fail("Turn notifications on for this device first.");
+  const { sent, gone } = await sendPush(targets, {
+    title: "Notifications are on",
+    body: "You will hear from us when your laundry is done and before your bookings.",
+    tag: "test",
+    url: "/settings",
+  });
+  await forgetDevices(ctx, gone);
+  if (sent === 0)
+    fail("Could not reach your devices. Turn notifications off and on again.");
+  return { sent };
 }
 
 /* ------------------------------------------------------------------ admin settings */

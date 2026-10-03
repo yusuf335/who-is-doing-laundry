@@ -46,6 +46,26 @@ service cloud.firestore {
     // users/{uid}: a private pointer from a person to their house.
     match /users/{userId} {
       allow read, write: if signedIn() && userId == uid();
+
+      // Browsers this person allowed to show notifications. Only they can see or change
+      // them; delivery reads nothing, because each scheduled message carries its devices.
+      match /pushDevices/{deviceId} {
+        allow get, delete: if signedIn() && userId == uid();
+        allow list: if signedIn() && userId == uid() && request.query.limit <= 20;
+        allow create, update: if signedIn() && userId == uid() && validPushDevice();
+      }
+    }
+
+    function validPushDevice() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['endpoint', 'keys', 'label', 'createdAt'])
+        && d.endpoint is string && d.endpoint.size() <= 1000
+        && d.endpoint.matches('^https://.*')
+        && d.keys is map && d.keys.keys().hasOnly(['p256dh', 'auth'])
+        && d.keys.p256dh is string && d.keys.p256dh.size() <= 200
+        && d.keys.auth is string && d.keys.auth.size() <= 100
+        && d.label is string && d.label.size() <= 60
+        && d.createdAt is timestamp;
     }
 
     // inviteCodes/{code}: looked up by exact code only, never listed. Knowing the code
@@ -186,10 +206,18 @@ service cloud.firestore {
         allow create: if isMember(houseId)
           && request.resource.data.uid == uid()
           && request.resource.data.machineId is string
-          && request.resource.data.startedAt is timestamp;
+          && request.resource.data.startedAt is timestamp
+          && !('pushId' in request.resource.data);
         // Anyone in the house may close a cycle (that is the "I emptied it" button), and
         // the server stamps the id of the scheduled reminder. Nothing else can be rewritten.
-        allow update: if isMember(houseId) && onlyChanges(['endedAt', 'reminderId']);
+        allow update: if isMember(houseId)
+          && (onlyChanges(['endedAt', 'reminderId'])
+            // Its notification id: the owner, once. The server checks the id before use.
+            || (resource.data.uid == uid()
+              && !('pushId' in resource.data)
+              && onlyChanges(['pushId'])
+              && request.resource.data.pushId is string
+              && request.resource.data.pushId.size() <= 200));
         allow delete: if isMember(houseId) && (isAdmin(houseId) || staleSession());
       }
 
@@ -213,11 +241,18 @@ service cloud.firestore {
           && request.resource.data.endAt.toMillis() % 900000 == 0
           && request.resource.data.endAt.toMillis() - request.resource.data.startAt.toMillis() <= 21600000
           && request.resource.data.endAt > request.time
+          && !('pushId' in request.resource.data)
           // Two weeks ahead in whole days (MAX_DAYS_AHEAD); a day's slack for time zones,
           // the same as the server.
           && request.resource.data.startAt <= request.time + duration.value(15, 'd');
         // Edits go through cancel + rebook so the slot locks always match the booking.
-        allow update: if false;
+        // The one exception: the owner noting the id of its "starts soon" notification.
+        allow update: if isMember(houseId)
+          && resource.data.uid == uid()
+          && !('pushId' in resource.data)
+          && onlyChanges(['pushId'])
+          && request.resource.data.pushId is string
+          && request.resource.data.pushId.size() <= 200;
         // Owners and the admin cancel; anyone may sweep a booking whose time has passed,
         // which is how the app keeps no record of past bookings.
         allow delete: if isMember(houseId)

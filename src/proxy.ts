@@ -23,7 +23,8 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   // Every page route. Skips Next internals, static files (anything with an extension),
-  // and `/__/`, which is Firebase's sign-in helper proxied through this origin: sending
-  // that to /login would break the sign-in it is part of.
-  matcher: ["/((?!_next|__/|.*\\..*).*)"],
+  // `/__/`, which is Firebase's sign-in helper proxied through this origin (sending that
+  // to /login would break the sign-in it is part of), and `/api/`, whose callers have no
+  // session cookie and which check their own signatures.
+  matcher: ["/((?!_next|__/|api/|.*\\..*).*)"],
 };
