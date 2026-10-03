@@ -139,8 +139,8 @@ export function PhoneNotifications() {
         <div className="space-y-1">
           <p className="font-medium">Add Laundry to your Home Screen first</p>
           <p className="text-muted-foreground">
-            iPhone only allows notifications from apps on the Home Screen. In Safari, tap
-            Share, then Add to Home Screen. Open Laundry from there and come back here.
+            iPhone only allows notifications from apps on the Home Screen. Follow the two
+            steps above, then open Laundry from your Home Screen and come back here.
           </p>
         </div>
       </div>

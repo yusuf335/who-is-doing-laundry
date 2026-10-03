@@ -26,6 +26,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+// Imported for its side effect: it starts listening for the browser's install event
+// as soon as the app loads, before anyone opens Settings.
+import "@/lib/install-prompt";
 import { cn } from "@/lib/utils";
 
 const NAV = [

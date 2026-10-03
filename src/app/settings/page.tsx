@@ -37,6 +37,7 @@ import { toast } from "sonner";
 import { useHouse } from "@/components/providers/house-provider";
 import { LoadError } from "@/components/load-error";
 import { MyNotifications } from "@/components/my-notifications";
+import { InstallApp } from "@/components/install-app";
 import { PhoneNotifications } from "@/components/phone-notifications";
 import { RequireHouse } from "@/components/require-house";
 import { useRouter } from "next/navigation";
@@ -136,6 +137,8 @@ function Settings() {
 
   return (
     <div className="space-y-4">
+      <InstallApp />
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Notifications</CardTitle>
