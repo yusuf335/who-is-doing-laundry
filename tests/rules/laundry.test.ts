@@ -2032,6 +2032,45 @@ describe("updateMemberGroup / removeMember", () => {
   });
 });
 
+describe("removing a member", () => {
+  it("takes their membership, bookings and slots, and clears their pointer", async () => {
+    const { houseId, washerId, dryerId } = await setupHouse();
+    await createBooking(member(), {
+      houseId,
+      machineId: washerId,
+      startMs: futureSlot(2),
+      endMs: futureSlot(3),
+    });
+    await createBooking(other(), {
+      houseId,
+      machineId: dryerId,
+      startMs: futureSlot(2),
+      endMs: futureSlot(3),
+    });
+
+    expect(await removeMember(admin(), { houseId, uid: MEMBER })).toEqual({
+      bookingsCancelled: 1,
+    });
+    expect(await readMember(houseId, MEMBER)).toBeUndefined();
+    // Their app no longer waits on a house it cannot read: straight to onboarding.
+    expect(await readPointer(MEMBER)).toMatchObject({ houseId: null });
+    const bookings = await listBookings(houseId);
+    expect(bookings.map((b) => b.data().uid)).toEqual([OTHER]);
+    const slots = await listSlots(houseId);
+    expect(slots.every((slot) => slot.data().uid === OTHER)).toBe(true);
+  });
+
+  it("waits until their machine is emptied", async () => {
+    const { houseId, washerId } = await setupHouse();
+    await startSession(member(), { houseId, machineId: washerId, minutes: 30 });
+    await expectLaundryError(
+      removeMember(admin(), { houseId, uid: MEMBER }),
+      "Stop or empty it first",
+    );
+    expect(await readMember(houseId, MEMBER)).toBeDefined();
+  });
+});
+
 describe("regenerateInviteCode", () => {
   it("swaps the code on the house and in inviteCodes", async () => {
     const { houseId, code } = await setupHouse();

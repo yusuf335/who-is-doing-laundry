@@ -137,9 +137,19 @@ export function HouseProvider({
           });
         }
       },
-      // Never clear the pointer from an error. Losing it strands somebody outside a house
-      // they are still in, and for an admin there is no way back in from the outside.
-      (error) => console.error("member listener", error),
+      // Most errors say nothing about membership, so the pointer stays: losing it would
+      // strand somebody outside a house they are still in. A refusal is the exception:
+      // the rules only let members read member documents, so being refused means this
+      // account is not in the house (it left, or was removed). The server checks again
+      // before it clears anything.
+      (error) => {
+        console.error("member listener", error);
+        if (error.code !== "permission-denied") return;
+        patch({ member: null, memberChecked: true });
+        void runAction(() => clearHousePointerAction()).catch((clearError: unknown) => {
+          console.error("clear house pointer", clearError);
+        });
+      },
     );
 
     return () => {

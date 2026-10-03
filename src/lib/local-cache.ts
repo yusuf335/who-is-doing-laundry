@@ -79,3 +79,30 @@ async function deleteFirestoreDatabases(): Promise<void> {
     // Nothing more to try. The reload below at least gives the SDK a fresh start.
   }
 }
+
+/** Whether this browser still holds anything from an account that is not signed in. */
+export function hasLeftoverAccount(): boolean {
+  return readLastUid() !== null;
+}
+
+/**
+ * Everything this browser keeps for an account: Firestore's offline copy of their house,
+ * the app's own storage, and the record of who was last here. Run at sign-out, so the
+ * next person starts from nothing, and from the login page if a session ended without a
+ * proper sign-out. Terminates Firestore, so the caller must load a fresh page afterwards.
+ */
+export async function clearAccountData(db: Firestore): Promise<void> {
+  try {
+    localStorage.clear();
+    sessionStorage.clear();
+  } catch {
+    // Storage blocked: there was nothing in it to leave behind.
+  }
+
+  try {
+    await terminate(db);
+    await clearIndexedDbPersistence(db);
+  } catch {
+    await deleteFirestoreDatabases();
+  }
+}

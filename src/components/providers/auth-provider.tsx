@@ -12,7 +12,14 @@ import {
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { auth, db, googleProvider, isFirebaseConfigured } from "@/lib/firebase";
 import type { AuthUser } from "@/lib/firebase-config";
-import { isDifferentUser, rememberUser, resetLocalCache } from "@/lib/local-cache";
+import {
+  clearAccountData,
+  isDifferentUser,
+  rememberUser,
+  resetLocalCache,
+} from "@/lib/local-cache";
+import { unsubscribe as unsubscribePush } from "@/lib/push-client";
+import { removePushDeviceAction } from "@/server/actions";
 import { clearSessionCookie, writeSessionCookie } from "@/lib/session-cookie";
 
 interface AuthValue {
@@ -135,8 +142,21 @@ export function AuthProvider({
         }
       },
       signOut: async () => {
+        // While still signed in: stop this browser receiving this person's notifications,
+        // or whoever signs in next here would get them. Best effort; sign-out goes on.
+        try {
+          const endpoint = await unsubscribePush();
+          if (endpoint) await removePushDeviceAction({ endpoint });
+        } catch (error) {
+          console.error("forget push device on sign-out", error);
+        }
+
         clearSessionCookie();
         await firebaseSignOut(auth);
+        // Nothing of this account stays behind: the offline copy of the house, stored
+        // settings, and (through the full page load) everything held in memory.
+        await clearAccountData(db);
+        location.replace("/login");
       },
     }),
     [user, loading],

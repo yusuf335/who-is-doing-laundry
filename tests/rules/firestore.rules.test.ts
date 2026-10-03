@@ -764,6 +764,30 @@ describe("sessions (the 7-day laundry log)", () => {
   });
 });
 
+describe("clearing a removed member's pointer", () => {
+  const pointer = `users/${MEMBER}`;
+  const membership = `${housePath}/members/${MEMBER}`;
+
+  it("lets the admin empty it together with the removal", async () => {
+    const db = dbAs(ADMIN);
+    const batch = writeBatch(db);
+    batch.delete(doc(db, membership));
+    batch.update(doc(db, pointer), { houseId: null });
+    await assertSucceeds(batch.commit());
+  });
+
+  it("never for someone still in the house, never to another value, never by others", async () => {
+    const db = dbAs(ADMIN);
+    await assertFails(updateDoc(doc(db, pointer), { houseId: null }));
+    const elsewhere = writeBatch(db);
+    elsewhere.delete(doc(db, membership));
+    elsewhere.update(doc(db, pointer), { houseId: "another-house" });
+    await assertFails(elsewhere.commit());
+    await assertFails(updateDoc(doc(dbAs(OTHER), pointer), { houseId: null }));
+    await assertFails(getDoc(doc(dbAs(ADMIN), pointer)));
+  });
+});
+
 describe("push devices", () => {
   const device = (extra: Record<string, unknown> = {}) => ({
     endpoint: "https://push.example.com/abc",

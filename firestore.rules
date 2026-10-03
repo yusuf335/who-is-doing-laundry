@@ -46,6 +46,15 @@ service cloud.firestore {
     // users/{uid}: a private pointer from a person to their house.
     match /users/{userId} {
       allow read, write: if signedIn() && userId == uid();
+      // A house's admin removing someone also clears that person's pointer to the house,
+      // so their app does not wait on a house it can no longer read. Only to empty, only
+      // when it names the admin's house, and only in the same write as the removal.
+      allow update: if signedIn()
+        && resource.data.houseId is string
+        && isAdmin(resource.data.houseId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['houseId'])
+        && request.resource.data.houseId == null
+        && !existsAfter(/databases/$(database)/documents/houses/$(resource.data.houseId)/members/$(userId));
 
       // Browsers this person allowed to show notifications. Only they can see or change
       // them; delivery reads nothing, because each scheduled message carries its devices.

@@ -1277,9 +1277,80 @@ export async function removeMember(
 ) {
   const { house } = await requireAdmin(ctx, input.houseId);
   if (input.uid === house.adminUid) fail("The admin cannot be removed.");
-  const batch = writeBatch(ctx.db);
-  batch.delete(memberDoc(ctx.db, input.houseId, input.uid));
-  await batch.commit();
+  const target = await getDoc(memberDoc(ctx.db, input.houseId, input.uid));
+  if (!target.exists()) return { bookingsCancelled: 0 };
+  const removed = target.data() as Member;
+
+  // The same rule as leaving: nobody is removed with their laundry still claiming a
+  // machine. The admin can stop or empty it first.
+  const machines = await getDocs(query(machinesCol(ctx.db, input.houseId), limit(50)));
+  const running = machines.docs.find(
+    (d) => (d.data() as Machine).currentSession?.uid === input.uid,
+  );
+  if (running) {
+    fail(
+      `${(running.data() as Machine).name} is running ${removed.displayName}'s cycle. Stop or empty it first.`,
+    );
+  }
+
+  // Their bookings go with them, so the calendar does not show slots held by someone
+  // who can no longer use them.
+  const bookings = await getDocs(
+    query(bookingsCol(ctx.db, input.houseId), where("uid", "==", input.uid), limit(50)),
+  );
+  const removal = (clearPointer: boolean) => {
+    const batch = writeBatch(ctx.db);
+    bookings.forEach((snap) => {
+      const booking = snap.data() as Omit<Booking, "id">;
+      batch.delete(snap.ref);
+      for (const id of slotIdsForRange(
+        booking.machineId,
+        booking.startAt.toDate(),
+        booking.endAt.toDate(),
+      )) {
+        batch.delete(slotDoc(ctx.db, input.houseId, id));
+      }
+    });
+    batch.delete(memberDoc(ctx.db, input.houseId, input.uid));
+    // Their own record stops naming this house, so their app goes straight to
+    // onboarding instead of waiting on a house it can no longer read. The rules allow an
+    // admin this one change, and only together with the removal.
+    if (clearPointer) batch.update(userDoc(ctx.db, input.uid), { houseId: null });
+    return batch.commit();
+  };
+  await removal(true).catch(async (error: unknown) => {
+    // Their own record could not be cleared (missing, or rules from before this change):
+    // remove them anyway. Their app clears it the next time it opens.
+    if (!(error instanceof FirebaseError)) throw error;
+    if (error.code !== "not-found" && error.code !== "permission-denied") throw error;
+    await removal(false);
+  });
+
+  // Their pending "starts soon" reminders would now be about nothing.
+  await Promise.all(
+    bookings.docs.map(async (snap) => {
+      const booking = snap.data() as Omit<Booking, "id"> & {
+        pushId?: unknown;
+        reminderId?: unknown;
+      };
+      if (booking.startAt.toMillis() <= Date.now()) return;
+      if (typeof booking.pushId === "string") {
+        await cancelPush(
+          booking.pushId,
+          bookingSoonPush({
+            machineName: "",
+            bookingId: snap.id,
+            start: booking.startAt.toDate(),
+          }).tag,
+        );
+      }
+      if (typeof booking.reminderId === "string") {
+        await cancelScheduledEmail(booking.reminderId, removed.email);
+      }
+    }),
+  );
+
+  return { bookingsCancelled: bookings.size };
 }
 
 export async function regenerateInviteCode(

@@ -12,12 +12,21 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { errorMessage } from "@/lib/errors";
 import { hasSessionCookie } from "@/lib/session-cookie";
-import { isFirebaseConfigured } from "@/lib/firebase";
+import { db, isFirebaseConfigured } from "@/lib/firebase";
+import { clearAccountData, hasLeftoverAccount } from "@/lib/local-cache";
 
 export default function LoginPage() {
   const router = useRouter();
   const { user, loading, signInWithGoogle } = useAuth();
   const [busy, setBusy] = useState(false);
+
+  // A session that ended without a sign-out (expired, cleared cookies, another tab) can
+  // leave the last account's data here. Clear it once before anyone signs in; the reload
+  // gives Firestore a fresh start, and with the data gone this does not run again.
+  useEffect(() => {
+    if (loading || user || !hasLeftoverAccount()) return;
+    void clearAccountData(db).then(() => location.reload());
+  }, [loading, user]);
 
   useEffect(() => {
     // Only leave once the proxy would recognise us. Navigating on `user` alone races the
