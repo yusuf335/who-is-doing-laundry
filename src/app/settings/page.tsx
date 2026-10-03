@@ -32,7 +32,7 @@ import {
   IconUsers,
   IconWashMachine,
 } from "@tabler/icons-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useHouse } from "@/components/providers/house-provider";
 import { LoadError } from "@/components/load-error";
@@ -71,6 +71,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { useJoinRequests, useMachines, useMembers } from "@/hooks/use-house-data";
+import { useNow } from "@/hooks/use-now";
 import { errorMessage } from "@/lib/errors";
 import { colorWarning, machineColors, suggestColor } from "@/lib/machine-color";
 import { scheduleModeOf } from "@/lib/schedule";
@@ -172,6 +173,7 @@ function Settings() {
             key={`${house.name}|${house.groups.join("|")}`}
             house={house}
           />
+          <TimeZoneCard key={house.timeZone ?? "UTC"} house={house} />
           <ScheduleCard key={JSON.stringify(house.schedule)} house={house} />
           <EmailRemindersCard house={house} />
           <MachinesCard
@@ -582,13 +584,115 @@ function HouseDetailsCard({ house }: { house: House }) {
   );
 }
 
+/** "MDT · 4:32 PM": what the zone is called right now and its local time. */
+function zoneNow(zone: string, now: Date): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    }).formatToParts(now);
+    const name = parts.find((p) => p.type === "timeZoneName")?.value ?? "";
+    const time = parts
+      .filter((p) => p.type !== "timeZoneName")
+      .map((p) => p.value)
+      .join("")
+      .trim();
+    return `${name} · ${time}`;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The house's own clock. It decides when one day hands over to the next, and the times
+ * printed in emails and notifications, which the server would otherwise give in UTC.
+ * Daylight saving follows automatically from the zone.
+ */
+function TimeZoneCard({ house }: { house: House }) {
+  const current = house.timeZone ?? "UTC";
+  const device = deviceTimeZone();
+  const [busy, setBusy] = useState(false);
+  const now = new Date(useNow(60_000));
+  const zones = useMemo(() => {
+    const all =
+      typeof Intl.supportedValuesOf === "function"
+        ? Intl.supportedValuesOf("timeZone")
+        : [];
+    // The current and the device's zone are always offered, even if the list lacks them.
+    return Array.from(new Set([current, device, "UTC", ...all]));
+  }, [current, device]);
+
+  async function choose(zone: string) {
+    if (zone === current) return;
+    setBusy(true);
+    try {
+      await runAction(() =>
+        updateScheduleSettingsAction({
+          houseId: house.id,
+          scheduleMode: scheduleModeOf(house),
+          timeZone: zone,
+        }),
+      );
+      toast.success(`Time zone set to ${zone.replace(/_/g, " ")}.`);
+    } catch (error) {
+      toast.error(errorMessage(error, "Could not change the time zone."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Time zone</CardTitle>
+        <CardDescription>
+          When one day hands over to the next, and the times in emails and notifications.
+          Daylight saving is followed automatically.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Select value={current} onValueChange={choose} disabled={busy}>
+          <SelectTrigger aria-label="Time zone" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="max-h-80">
+            {zones.map((zone) => (
+              <SelectItem key={zone} value={zone}>
+                <span>{zone.replace(/_/g, " ")}</span>
+                <span className="text-muted-foreground text-xs tabular-nums">
+                  {zoneNow(zone, now)}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-muted-foreground text-xs tabular-nums">
+          It is {zoneNow(current, now).split(" · ")[1] ?? ""} in the house now (
+          {zoneNow(current, now).split(" · ")[0]}).
+        </p>
+        {device !== current && (
+          <Button
+            variant="outline"
+            className="h-10"
+            disabled={busy}
+            onClick={() => choose(device)}
+          >
+            Use this device&apos;s zone ({device.replace(/_/g, " ")})
+          </Button>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ScheduleCard({ house }: { house: House }) {
   const [schedule, setSchedule] = useState<Schedule>(house.schedule);
   const [busy, setBusy] = useState(false);
   const [savingMode, setSavingMode] = useState(false);
   const mode = scheduleModeOf(house);
   const houseZone = house.timeZone ?? "UTC";
-  const phoneZone = deviceTimeZone();
 
   async function saveSettings(next: { scheduleMode?: ScheduleMode; timeZone?: string }) {
     setSavingMode(true);
@@ -671,19 +775,7 @@ function ScheduleCard({ house }: { house: House }) {
         {mode !== "open" && (
           <p className="text-muted-foreground text-xs">
             Days change at midnight in <span className="font-medium">{houseZone}</span>.
-            {phoneZone !== houseZone && (
-              <>
-                {" "}
-                <button
-                  type="button"
-                  className="underline underline-offset-4"
-                  disabled={savingMode}
-                  onClick={() => saveSettings({ timeZone: phoneZone })}
-                >
-                  Use this phone&apos;s zone ({phoneZone})
-                </button>
-              </>
-            )}
+            Change it under Time zone.
           </p>
         )}
 
