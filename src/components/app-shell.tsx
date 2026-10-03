@@ -86,8 +86,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const wide = pathname === "/";
 
   return (
-    <div className="flex min-h-full flex-1 flex-col">
-      <header className="bg-background/85 sticky top-0 z-30 border-b backdrop-blur">
+    // On a phone the shell is exactly the screen and only <main> scrolls, so the tab bar
+    // is an ordinary row at the bottom. A position: fixed bar drifts up the screen in an
+    // iPhone Home Screen app, most often after the keyboard closes.
+    <div className="flex min-h-full flex-1 flex-col max-md:h-dvh max-md:min-h-0 max-md:overflow-hidden">
+      <header className="bg-background/85 sticky top-0 z-30 shrink-0 border-b backdrop-blur">
         <div
           className={cn(
             "mx-auto flex w-full max-w-3xl items-center gap-2 px-4 py-3",
@@ -163,14 +166,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <main
         className={cn(
-          "mx-auto w-full max-w-3xl flex-1 space-y-3 px-4 pt-4 pb-24 md:pb-10",
+          "mx-auto w-full max-w-3xl flex-1 space-y-3 px-4 pt-4 pb-6 md:pb-10",
+          "max-md:min-h-0 max-md:overflow-y-auto max-md:overscroll-contain",
           wide && "lg:max-w-none lg:px-6 lg:pb-6",
         )}
       >
         {children}
       </main>
 
-      <nav className="bg-background/95 fixed inset-x-0 bottom-0 z-30 border-t pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+      <nav className="bg-background shrink-0 border-t pb-[env(safe-area-inset-bottom)] md:hidden">
         <div className="mx-auto flex max-w-3xl">
           {nav.map((item) => {
             const active = pathname === item.href;
