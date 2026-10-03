@@ -3,6 +3,11 @@ import "server-only";
 import { bookingSoonEmail, cycleDoneEmail, testEmail } from "@/emails/build";
 import type { ReminderContent } from "@/lib/reminder";
 
+interface EmailUrls {
+  appUrl: string;
+  assetUrl: string;
+}
+
 const ENDPOINT = "https://api.resend.com/emails";
 
 interface ResendConfig {
@@ -11,6 +16,7 @@ interface ResendConfig {
   /** When set, every reminder goes here instead of the housemate. For testing only. */
   testRecipient: string | null;
   appUrl: string;
+  assetUrl: string;
 }
 
 /**
@@ -23,12 +29,22 @@ function config(): ResendConfig | null {
   // A deployment-wide default; each house can override it in settings.
   const from = process.env.RESEND_FROM?.trim() ?? "";
 
-  const vercel = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "";
+  // The public production domain. Not VERCEL_URL: per-deployment addresses sit behind
+  // Vercel's login wall, so links and images there fail for anyone outside the team.
+  const production = process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+    : "";
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL?.trim() || production;
   return {
     apiKey,
     from,
     testRecipient: process.env.RESEND_TEST_RECIPIENT?.trim() || null,
-    appUrl: process.env.NEXT_PUBLIC_APP_URL?.trim() || vercel,
+    appUrl,
+    // Where email images load from. It must be public https: an inbox cannot fetch
+    // localhost, so local development can point this at the deployed site.
+    assetUrl:
+      process.env.EMAIL_ASSET_URL?.trim() ||
+      (appUrl.startsWith("https://") ? appUrl : production),
   };
 }
 
@@ -53,7 +69,7 @@ async function scheduleEmail(
   input: EmailTo,
   /** Null sends straight away. */
   at: Date | null,
-  build: (appUrl: string) => Promise<ReminderContent>,
+  build: (urls: EmailUrls) => Promise<ReminderContent>,
 ): Promise<string | null> {
   const cfg = config();
   if (!cfg) return null;
@@ -64,7 +80,10 @@ async function scheduleEmail(
   if (!to) return null;
 
   try {
-    const { subject, text, html } = await build(cfg.appUrl);
+    const { subject, text, html } = await build({
+      appUrl: cfg.appUrl,
+      assetUrl: cfg.assetUrl,
+    });
     const response = await fetch(ENDPOINT, {
       method: "POST",
       headers: {
@@ -110,8 +129,8 @@ export function scheduleCycleReminder(
     accent?: string;
   },
 ): Promise<string | null> {
-  return scheduleEmail(input, input.finishesAt, (appUrl) =>
-    cycleDoneEmail({ ...input, appUrl }),
+  return scheduleEmail(input, input.finishesAt, (urls) =>
+    cycleDoneEmail({ ...input, ...urls }),
   );
 }
 
@@ -128,7 +147,7 @@ export function scheduleBookingReminder(
   },
   at: Date,
 ): Promise<string | null> {
-  return scheduleEmail(input, at, (appUrl) => bookingSoonEmail({ ...input, appUrl }));
+  return scheduleEmail(input, at, (urls) => bookingSoonEmail({ ...input, ...urls }));
 }
 
 /**
@@ -139,8 +158,8 @@ export function scheduleBookingReminder(
 export async function sendTestEmail(
   input: EmailTo & { displayName: string; houseName: string },
 ): Promise<string | null> {
-  const sent = await scheduleEmail(input, null, (appUrl) =>
-    testEmail({ ...input, appUrl }),
+  const sent = await scheduleEmail(input, null, (urls) =>
+    testEmail({ ...input, ...urls }),
   );
   return sent === null ? null : (config()?.testRecipient ?? input.to.trim());
 }

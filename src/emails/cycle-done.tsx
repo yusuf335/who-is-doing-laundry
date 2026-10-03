@@ -9,6 +9,8 @@ export interface CycleDoneProps {
   finishedAt: string;
   accent?: string;
   appUrl?: string;
+  /** Public https base the logo loads from; omitted, the email goes without it. */
+  assetUrl?: string;
 }
 
 /** "Your laundry is done": sent when a cycle you started finishes. */
@@ -19,6 +21,7 @@ export default function CycleDone(props: CycleDoneProps) {
       heading="Your laundry is done"
       accent={props.accent}
       appUrl={props.appUrl}
+      assetUrl={props.assetUrl}
       footer="You get this because you started the cycle. Nobody else was emailed."
     >
       <Text style={paragraph}>Hi {props.firstName},</Text>
@@ -44,4 +47,5 @@ CycleDone.PreviewProps = {
   finishedAt: "3:45 PM",
   accent: "#2563eb",
   appUrl: "https://who-is-doing-laundry.vercel.app",
+  assetUrl: "https://who-is-doing-laundry.vercel.app",
 } satisfies CycleDoneProps;

@@ -31,10 +31,16 @@ describe("cycleDoneEmail", () => {
     expect(text).toContain("because you started the cycle. Nobody else was emailed.");
   });
 
-  it("links back to the app, with its icon, only when there is a URL", async () => {
+  it("links back to the app only when there is a URL", async () => {
     expect((await cycleDoneEmail(done)).html).not.toContain("Open Laundry");
-    const { html } = await cycleDoneEmail({ ...done, appUrl: "https://l.example/" });
-    expect(html).toContain('href="https://l.example"');
+    const { html } = await cycleDoneEmail({ ...done, appUrl: "http://localhost:3001/" });
+    expect(html).toContain('href="http://localhost:3001"');
+  });
+
+  it("loads the logo from a public https address, never localhost", async () => {
+    const local = await cycleDoneEmail({ ...done, assetUrl: "http://localhost:3001" });
+    expect(local.html).not.toContain("icon-192.png");
+    const { html } = await cycleDoneEmail({ ...done, assetUrl: "https://l.example/" });
     expect(html).toContain("https://l.example/icon-192.png");
   });
 

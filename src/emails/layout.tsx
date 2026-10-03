@@ -22,6 +22,7 @@ export function EmailLayout({
   heading,
   accent = "#171717",
   appUrl,
+  assetUrl,
   footer,
   children,
 }: {
@@ -31,10 +32,14 @@ export function EmailLayout({
   /** The machine's colour, so it reads like the calendar. */
   accent?: string;
   appUrl?: string;
+  /** Public https base for the logo. Inboxes cannot load localhost, so no https, no logo. */
+  assetUrl?: string;
   footer: string;
   children: React.ReactNode;
 }) {
   const link = appUrl?.trim().replace(/\/$/, "") ?? "";
+  const assets = assetUrl?.trim().replace(/\/$/, "") ?? "";
+  const logo = assets.startsWith("https://") ? `${assets}/icon-192.png` : "";
   return (
     <Html lang="en">
       <Head />
@@ -42,9 +47,9 @@ export function EmailLayout({
       <Body style={body}>
         <Container style={container}>
           <Section style={brand}>
-            {link && (
+            {logo && (
               <Img
-                src={`${link}/icon-192.png`}
+                src={logo}
                 width="36"
                 height="36"
                 alt=""

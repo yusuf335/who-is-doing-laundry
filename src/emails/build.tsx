@@ -34,6 +34,7 @@ export function cycleDoneEmail(input: {
   timeZone?: string;
   accent?: string;
   appUrl?: string;
+  assetUrl?: string;
 }): Promise<ReminderContent> {
   return content(
     `Your laundry is done: ${input.machineName}`,
@@ -44,6 +45,7 @@ export function cycleDoneEmail(input: {
       finishedAt={clockIn(input.finishesAt, input.timeZone)}
       accent={input.accent}
       appUrl={input.appUrl}
+      assetUrl={input.assetUrl}
     />,
   );
 }
@@ -57,6 +59,7 @@ export function bookingSoonEmail(input: {
   timeZone?: string;
   accent?: string;
   appUrl?: string;
+  assetUrl?: string;
 }): Promise<ReminderContent> {
   return content(
     `${input.machineName} in ${BOOKING_LEAD_MINUTES} minutes`,
@@ -68,6 +71,7 @@ export function bookingSoonEmail(input: {
       endsAt={clockIn(input.endsAt, input.timeZone)}
       accent={input.accent}
       appUrl={input.appUrl}
+      assetUrl={input.assetUrl}
     />,
   );
 }
@@ -76,6 +80,7 @@ export function testEmail(input: {
   displayName: string;
   houseName: string;
   appUrl?: string;
+  assetUrl?: string;
 }): Promise<ReminderContent> {
   return content(
     "Test email from Laundry",
@@ -83,6 +88,7 @@ export function testEmail(input: {
       firstName={firstName(input.displayName)}
       houseName={input.houseName}
       appUrl={input.appUrl}
+      assetUrl={input.assetUrl}
     />,
   );
 }

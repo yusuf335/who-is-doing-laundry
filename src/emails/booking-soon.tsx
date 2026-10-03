@@ -11,6 +11,8 @@ export interface BookingSoonProps {
   endsAt: string;
   accent?: string;
   appUrl?: string;
+  /** Public https base the logo loads from; omitted, the email goes without it. */
+  assetUrl?: string;
 }
 
 /** "Your booking starts soon": sent a little before a booking you made. */
@@ -21,6 +23,7 @@ export default function BookingSoon(props: BookingSoonProps) {
       heading={`${props.machineName} in ${BOOKING_LEAD_MINUTES} minutes`}
       accent={props.accent}
       appUrl={props.appUrl}
+      assetUrl={props.assetUrl}
       footer="You get this because you made the booking. Nobody else was emailed."
     >
       <Text style={paragraph}>Hi {props.firstName}, your booking is coming up.</Text>
@@ -45,4 +48,5 @@ BookingSoon.PreviewProps = {
   endsAt: "4:45 PM",
   accent: "#c2410c",
   appUrl: "https://who-is-doing-laundry.vercel.app",
+  assetUrl: "https://who-is-doing-laundry.vercel.app",
 } satisfies BookingSoonProps;
