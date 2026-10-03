@@ -137,13 +137,14 @@
  */
 @media (pointer: coarse) {
   /* Buttons are matched by their data-size because `asChild` triggers (menus, links)
-     replace data-slot with their own. */
+     replace data-slot with their own. Switches are buttons with a data-size too, but
+     stretching one makes it a tall pill; it already has an enlarged invisible hit area. */
   :is(button, a)[data-size]:not([data-size^="icon"]):not([data-size="xs"]):not(
       [data-size="sm"]
-    ) {
+    ):not([data-slot="switch"]) {
     min-height: 2.75rem;
   }
-  :is(button, a)[data-size="sm"] {
+  :is(button, a)[data-size="sm"]:not([data-slot="switch"]) {
     min-height: 2.5rem;
   }
   :is(button, a)[data-size="icon"],
