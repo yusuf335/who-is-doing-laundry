@@ -168,7 +168,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <main
         className={cn(
           "mx-auto w-full max-w-3xl flex-1 space-y-3 px-4 pt-4 pb-6 md:pb-10",
-          "max-md:min-h-0 max-md:overflow-y-auto max-md:overscroll-contain",
+          // relative: hidden form parts positioned against the page (the native select
+          // behind a dropdown) stay inside the scroll area instead of stretching the page.
+          "relative max-md:min-h-0 max-md:overflow-y-auto max-md:overscroll-contain",
           wide && "lg:max-w-none lg:px-6 lg:pb-6",
         )}
       >
