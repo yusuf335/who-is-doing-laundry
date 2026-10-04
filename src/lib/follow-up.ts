@@ -1,4 +1,4 @@
-import { SLOT_MINUTES, addMinutes, snapToSlot } from "@/lib/time";
+import { SLOT_MINUTES, addMinutes, roundUpToSlot, snapToSlot } from "@/lib/time";
 import { cyclesOf, type Booking, type Machine } from "@/lib/types";
 
 /** A dryer slot to offer right after a wash. */
@@ -6,7 +6,10 @@ export interface FollowUpProposal {
   machine: Machine;
   start: Date;
   end: Date;
+  /** The cycle's real length; the booking itself is rounded up to whole quarter hours. */
   minutes: number;
+  /** The preset it is for, when the machine has one. */
+  cycleName?: string;
   /** True when the slot straight after the wash was taken and this one is later. */
   delayed: boolean;
 }
@@ -20,10 +23,11 @@ function snapUp(date: Date): Date {
 }
 
 /** The cycle a dryer is most likely to run: its "Normal" preset, else the middle one. */
-function defaultMinutes(machine: Machine): number {
+function defaultCycle(machine: Machine): { name?: string; minutes: number } {
   const cycles = cyclesOf(machine);
   const normal = cycles.find((c) => c.name.trim().toLowerCase() === "normal");
-  return (normal ?? cycles[Math.floor((cycles.length - 1) / 2)])?.minutes ?? 60;
+  const cycle = normal ?? cycles[Math.floor((cycles.length - 1) / 2)];
+  return cycle ? { name: cycle.name, minutes: cycle.minutes } : { minutes: 60 };
 }
 
 function overlaps(booking: Booking, start: Date, end: Date): boolean {
@@ -55,7 +59,10 @@ export function proposeDryerSlot(input: {
   let best: FollowUpProposal | null = null;
 
   for (const machine of dryers) {
-    const minutes = defaultMinutes(machine);
+    const cycle = defaultCycle(machine);
+    const { minutes } = cycle;
+    // Bookings are whole quarter hours, so a 40-minute dry holds 45.
+    const booked = roundUpToSlot(minutes);
     const taken = bookings
       .filter((b) => b.machineId === machine.id)
       .sort((a, b) => a.startAt.toMillis() - b.startAt.toMillis());
@@ -64,7 +71,7 @@ export function proposeDryerSlot(input: {
     // Each clash pushes the window to just after the booking in the way, so this walks
     // forward a booking at a time rather than a slot at a time.
     for (let guard = 0; guard < 50; guard++) {
-      const end = addMinutes(start, minutes);
+      const end = addMinutes(start, booked);
       if (start.getTime() > limit.getTime()) break;
 
       const clash = taken.find((b) => overlaps(b, start, end));
@@ -75,6 +82,7 @@ export function proposeDryerSlot(input: {
             start,
             end,
             minutes,
+            ...(cycle.name ? { cycleName: cycle.name } : {}),
             delayed: start.getTime() !== earliest.getTime(),
           };
         }

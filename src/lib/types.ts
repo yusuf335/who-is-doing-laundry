@@ -310,9 +310,19 @@ export interface Booking {
   createdAt: Timestamp | null;
   /** Set when the booker started the machine for it. Without it the booking lapses. */
   checkedInAt?: Timestamp;
+  /**
+   * The cycle it was booked for, so Start can run exactly that. The booking itself is
+   * whole quarter hours (a 40-minute cycle books 45); these keep the real length.
+   * Absent on bookings made before they were recorded.
+   */
+  cycleName?: string;
+  cycleMinutes?: number;
 }
 
 /** Minutes after its start a booking nobody has started is released for others. */
+/** Longest cycle preset name ("Normal", "Delicates"). */
+export const MAX_CYCLE_NAME_LENGTH = 24;
+
 export const NO_SHOW_MINUTES = 15;
 
 /**

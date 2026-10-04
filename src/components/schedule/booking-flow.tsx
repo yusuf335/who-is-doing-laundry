@@ -447,6 +447,8 @@ function BookForm({
           machineId: machine.id,
           startMs: start.getTime(),
           endMs: end.getTime(),
+          cycleMinutes: Math.round(requested),
+          ...(usingCustom ? {} : { cycleName: cycle.name }),
         }),
       );
       toast.success(
@@ -791,6 +793,8 @@ function DryAfterDialog({
           machineId: proposal.machine.id,
           startMs: proposal.start.getTime(),
           endMs: proposal.end.getTime(),
+          cycleMinutes: proposal.minutes,
+          ...(proposal.cycleName ? { cycleName: proposal.cycleName } : {}),
         }),
       );
       toast.success(

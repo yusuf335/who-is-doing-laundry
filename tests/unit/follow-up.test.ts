@@ -53,6 +53,17 @@ describe("proposeDryerSlot", () => {
     expect(proposal!.end.toISOString()).toBe(at("10:45").toISOString());
   });
 
+  it("books whole quarter hours but keeps the cycle's real length and name", () => {
+    const proposal = proposeDryerSlot({
+      washEndsAt: at("10:00"),
+      dryers: [dryer("Dryer", 50)],
+      bookings: [],
+    });
+    expect(proposal!.minutes).toBe(50);
+    expect(proposal!.cycleName).toBe("Normal");
+    expect(proposal!.end.toISOString()).toBe(at("11:00").toISOString());
+  });
+
   it("rounds a wash that ends off the grid up to the next boundary", () => {
     const proposal = proposeDryerSlot({
       washEndsAt: new Date("2026-09-21T10:07:00.000Z"),

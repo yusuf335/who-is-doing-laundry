@@ -978,6 +978,35 @@ describe("createBooking", () => {
     ]);
   });
 
+  it("records the cycle it is for, and refuses one that does not fit", async () => {
+    const { houseId, washerId } = await setupHouse();
+    const startMs = futureSlot(1);
+    const { bookingId } = await createBooking(member(), {
+      houseId,
+      machineId: washerId,
+      startMs,
+      endMs: startMs + 45 * 60_000,
+      cycleMinutes: 40,
+      cycleName: "Normal",
+    });
+    const booking = await raw(async (db) =>
+      (await getDoc(doc(db, "houses", houseId, "bookings", bookingId))).data(),
+    );
+    expect(booking).toMatchObject({ cycleMinutes: 40, cycleName: "Normal" });
+
+    const later = futureSlot(4);
+    await expectLaundryError(
+      createBooking(member(), {
+        houseId,
+        machineId: washerId,
+        startMs: later,
+        endMs: later + 60 * 60_000,
+        cycleMinutes: 40,
+      }),
+      "does not match",
+    );
+  });
+
   it("rejects invalid ranges, unknown machines and non-members", async () => {
     const { houseId, washerId } = await setupHouse();
     const startMs = futureSlot(1);

@@ -99,6 +99,7 @@ import {
   DEFAULT_MAX_MINUTES,
   MACHINE_TYPES,
   MAX_CYCLES_PER_MACHINE,
+  MAX_CYCLE_NAME_LENGTH,
   NO_SHOW_MINUTES,
   SCHEDULE_MODES,
   SESSION_RETENTION_DAYS,
@@ -686,7 +687,14 @@ export async function endSession(
 
 export async function createBooking(
   ctx: ServerContext,
-  input: { houseId: string; machineId: string; startMs: number; endMs: number },
+  input: {
+    houseId: string;
+    machineId: string;
+    startMs: number;
+    endMs: number;
+    cycleName?: string;
+    cycleMinutes?: number;
+  },
 ) {
   const { house, member } = await requireMember(ctx, input.houseId);
   const start = new Date(input.startMs);
@@ -704,6 +712,18 @@ export async function createBooking(
   if (minutes > MAX_BOOKING_MINUTES) {
     fail(`Bookings can be at most ${MAX_BOOKING_MINUTES / 60} hours long.`);
   }
+  // The cycle it is for fills the last quarter hour at most partly: a 40-minute cycle
+  // books 45 minutes, never 60.
+  const { cycleMinutes } = input;
+  if (
+    cycleMinutes !== undefined &&
+    (!Number.isInteger(cycleMinutes) ||
+      cycleMinutes > minutes ||
+      cycleMinutes <= minutes - SLOT_MINUTES)
+  ) {
+    fail("The cycle does not match the length of the booking.");
+  }
+  const cycleName = input.cycleName?.trim().slice(0, MAX_CYCLE_NAME_LENGTH) || undefined;
   if (input.endMs <= Date.now()) fail("That slot is already in the past.");
   if (input.startMs > Date.now() + SERVER_MAX_AHEAD_MS) {
     fail(`Bookings open up to ${MAX_DAYS_AHEAD / 7} weeks ahead.`);
@@ -762,6 +782,8 @@ export async function createBooking(
       startAt,
       endAt: Timestamp.fromDate(end),
       createdAt: serverTimestamp(),
+      ...(cycleMinutes !== undefined ? { cycleMinutes } : {}),
+      ...(cycleName ? { cycleName } : {}),
     });
     slotIds.forEach((id, slotIndex) => {
       tx.set(slotDoc(ctx.db, input.houseId, id), {
@@ -1564,7 +1586,9 @@ export async function updateMachineCycles(
   }
   const cycles: Cycle[] = input.cycles.map((c) => {
     const name = typeof c.name === "string" ? c.name.trim() : "";
-    if (!name || name.length > 24) fail("Cycle names are 1 to 24 characters.");
+    if (!name || name.length > MAX_CYCLE_NAME_LENGTH) {
+      fail(`Cycle names are 1 to ${MAX_CYCLE_NAME_LENGTH} characters.`);
+    }
     if (!Number.isInteger(c.minutes) || c.minutes < 1 || c.minutes > maxMinutes) {
       fail(`"${name}" has to be between 1 and ${maxMinutes} minutes.`);
     }

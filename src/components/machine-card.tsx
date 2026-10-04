@@ -102,14 +102,20 @@ function myBookingNow(
 }
 
 /**
- * The cycle a booking was made for. Bookings are kept in whole quarter hours, so a
- * 40-minute "Normal" was booked as 45: the preset that rounds up to the booking's length
- * is the real one. With none (a custom length), the booking's own length.
+ * The cycle a booking was made for, as recorded when it was booked. Older bookings
+ * only have their length, in whole quarter hours (a 40-minute "Normal" was booked as
+ * 45), so for those the preset that rounds up to it is the best guess.
  */
 function cycleForBooking(
   machine: Machine,
   booking: Booking,
 ): { name: string | null; minutes: number } {
+  if (booking.cycleMinutes) {
+    return {
+      name: booking.cycleName ?? null,
+      minutes: Math.min(booking.cycleMinutes, maxMinutesOf(machine)),
+    };
+  }
   const booked = Math.round(
     (booking.endAt.toMillis() - booking.startAt.toMillis()) / 60_000,
   );

@@ -1004,6 +1004,22 @@ describe("bookings", () => {
     );
   });
 
+  it("records the cycle a booking is for, only when it fits the booking", async () => {
+    // One hour booked: a 50 or 60-minute cycle fits, 40 would have booked 45, 61 overruns.
+    const withCycle = (cycleMinutes: unknown, cycleName: unknown = "Normal") => ({
+      ...booking(MEMBER),
+      cycleMinutes,
+      cycleName,
+    });
+    const ref = (id: string) => doc(dbAs(MEMBER), `${housePath}/bookings/${id}`);
+    await assertSucceeds(setDoc(ref("c1"), withCycle(50)));
+    await assertSucceeds(setDoc(ref("c2"), withCycle(60)));
+    await assertFails(setDoc(ref("c3"), withCycle(40)));
+    await assertFails(setDoc(ref("c4"), withCycle(61)));
+    await assertFails(setDoc(ref("c5"), withCycle(50.5)));
+    await assertFails(setDoc(ref("c6"), withCycle(50, "x".repeat(25))));
+  });
+
   it("rejects an end before or equal to the start", async () => {
     await assertFails(
       setDoc(doc(dbAs(MEMBER), `${housePath}/bookings/b2`), booking(MEMBER, end, start)),

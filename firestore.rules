@@ -270,6 +270,16 @@ service cloud.firestore {
           && !('reminderId' in request.resource.data)
           && !('checkedInAt' in request.resource.data)
           && !('scheduled' in request.resource.data)
+          // The cycle it is for, when recorded: fills the last quarter hour at most partly.
+          && (!('cycleMinutes' in request.resource.data)
+            || (request.resource.data.cycleMinutes is int
+              && request.resource.data.cycleMinutes * 60000
+                <= request.resource.data.endAt.toMillis() - request.resource.data.startAt.toMillis()
+              && request.resource.data.cycleMinutes * 60000 + 900000
+                > request.resource.data.endAt.toMillis() - request.resource.data.startAt.toMillis()))
+          && (!('cycleName' in request.resource.data)
+            || (request.resource.data.cycleName is string
+              && request.resource.data.cycleName.size() <= 24))
           // Two weeks ahead in whole days (MAX_DAYS_AHEAD); a day's slack for time zones,
           // the same as the server.
           && request.resource.data.startAt <= request.time + duration.value(15, 'd');

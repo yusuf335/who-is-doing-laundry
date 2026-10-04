@@ -78,6 +78,8 @@ export async function createBookingAction(input: {
   machineId: string;
   startMs: number;
   endMs: number;
+  cycleName?: string;
+  cycleMinutes?: number;
 }) {
   return act((ctx) => laundry.createBooking(ctx, input));
 }
