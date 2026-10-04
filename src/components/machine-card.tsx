@@ -30,11 +30,18 @@ import { errorMessage } from "@/lib/errors";
 import { dayAccess } from "@/lib/schedule";
 import { runAction } from "@/lib/run-action";
 import { textOn } from "@/lib/machine-color";
-import { formatDuration, formatMinutes, formatTime, sameDay } from "@/lib/time";
+import {
+  formatDuration,
+  formatMinutes,
+  formatTime,
+  roundUpToSlot,
+  sameDay,
+} from "@/lib/time";
 import {
   cyclesOf,
   machineState,
   maxMinutesOf,
+  NO_SHOW_MINUTES,
   type Booking,
   type Machine,
 } from "@/lib/types";
@@ -72,6 +79,48 @@ function bookedNowBy(
 }
 
 /**
+ * Your own booking for this machine that you can start now: from 15 minutes before it
+ * begins (the same window that checks it in) until it ends.
+ */
+function myBookingNow(
+  machine: Machine,
+  bookings: Booking[],
+  uid: string | undefined,
+  now: number,
+): Booking | null {
+  if (!uid) return null;
+  return (
+    bookings.find(
+      (b) =>
+        b.machineId === machine.id &&
+        b.uid === uid &&
+        !b.checkedInAt &&
+        b.startAt.toMillis() - NO_SHOW_MINUTES * 60_000 <= now &&
+        b.endAt.toMillis() > now,
+    ) ?? null
+  );
+}
+
+/**
+ * The cycle a booking was made for. Bookings are kept in whole quarter hours, so a
+ * 40-minute "Normal" was booked as 45: the preset that rounds up to the booking's length
+ * is the real one. With none (a custom length), the booking's own length.
+ */
+function cycleForBooking(
+  machine: Machine,
+  booking: Booking,
+): { name: string | null; minutes: number } {
+  const booked = Math.round(
+    (booking.endAt.toMillis() - booking.startAt.toMillis()) / 60_000,
+  );
+  const preset = cyclesOf(machine)
+    .filter((c) => roundUpToSlot(c.minutes) === booked)
+    .sort((a, b) => b.minutes - a.minutes)[0];
+  if (preset) return { name: preset.name, minutes: preset.minutes };
+  return { name: null, minutes: Math.max(1, Math.min(booked, maxMinutesOf(machine))) };
+}
+
+/**
  * The one button a machine needs right now: Start when it is free, Done for your own
  * cycle, Stop for someone else's (only once it has finished, or for the admin), and
  * Emptied when the cycle is over. Shared by the phone cards and the desktop sidebar.
@@ -102,6 +151,30 @@ export function MachineAction({
     bookedNowBy(machine, bookings, member?.uid, now),
   );
 
+  // Your booking already says which cycle, so Start just starts it.
+  const booking = myBookingNow(machine, bookings, member?.uid, now);
+
+  async function startBooked(booked: Booking) {
+    if (!houseId || !member) return;
+    const cycle = cycleForBooking(machine, booked);
+    setBusy(true);
+    try {
+      await runAction(() =>
+        startSessionAction({ houseId, machineId: machine.id, minutes: cycle.minutes }),
+      );
+      toast.success(
+        `${machine.name} started: ${cycle.name ? `${cycle.name}, ` : ""}${formatMinutes(cycle.minutes)}.`,
+      );
+    } catch (error) {
+      // Started late and the full cycle would run into the next booking, say: let them
+      // pick a shorter one.
+      toast.error(errorMessage(error, "Could not start the machine."));
+      setStartOpen(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function finish() {
     if (!houseId || !member) return;
     setBusy(true);
@@ -121,9 +194,9 @@ export function MachineAction({
         <Button
           size="sm"
           className={cn("h-9 shrink-0 px-3", className)}
-          disabled={startReason !== null}
+          disabled={startReason !== null || busy}
           title={startReason ?? undefined}
-          onClick={() => setStartOpen(true)}
+          onClick={() => (booking ? startBooked(booking) : setStartOpen(true))}
         >
           {startReason ? <IconLock /> : <IconPlayerPlayFilled />}
           Start
