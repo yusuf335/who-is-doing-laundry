@@ -88,8 +88,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     // On a phone the shell is exactly the screen and only <main> scrolls, so the tab bar
     // is an ordinary row at the bottom. A position: fixed bar drifts up the screen in an
-    // iPhone Home Screen app, most often after the keyboard closes.
-    <div className="flex min-h-full flex-1 flex-col max-md:h-dvh max-md:min-h-0 max-md:overflow-hidden">
+    // iPhone Home Screen app, most often after the keyboard closes. flex-none, because
+    // flex-1 would size it from the body (as tall as the content), not from the screen.
+    <div className="flex min-h-full flex-1 flex-col max-md:h-dvh max-md:min-h-0 max-md:flex-none max-md:overflow-hidden">
       <header className="bg-background/85 sticky top-0 z-30 shrink-0 border-b backdrop-blur">
         <div
           className={cn(
