@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { Suspense } from "react";
+import { LoadingScreen } from "@/components/loading-screen";
 import { AuthProvider } from "@/components/providers/auth-provider";
 import { HouseProvider } from "@/components/providers/house-provider";
 import { ThemeProvider } from "@/components/providers/theme-provider";
@@ -26,11 +28,21 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-export default async function RootLayout({ children }: LayoutProps<"/">) {
-  // Resolved from the session cookie so signed-in members get the app shell on the very
-  // first paint instead of a loading screen followed by a client-side redirect.
+/**
+ * Resolved from the session cookie so signed-in members land straight in the app shell
+ * instead of a client-side redirect. It costs a token check and a few reads, so it sits
+ * behind Suspense: the loading screen goes out first and this streams in after it.
+ */
+async function SessionProviders({ children }: { children: React.ReactNode }) {
   const session = await getServerSession();
+  return (
+    <AuthProvider initialUser={session.user}>
+      <HouseProvider initial={session.membership}>{children}</HouseProvider>
+    </AuthProvider>
+  );
+}
 
+export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
@@ -44,9 +56,9 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
       </head>
       <body className="bg-background text-foreground flex min-h-full flex-col">
         <ThemeProvider>
-          <AuthProvider initialUser={session.user}>
-            <HouseProvider initial={session.membership}>{children}</HouseProvider>
-          </AuthProvider>
+          <Suspense fallback={<LoadingScreen />}>
+            <SessionProviders>{children}</SessionProviders>
+          </Suspense>
           <Toaster richColors position="top-right" />
         </ThemeProvider>
       </body>
