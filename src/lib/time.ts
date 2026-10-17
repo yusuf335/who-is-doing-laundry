@@ -49,6 +49,42 @@ export function isValidTimeZone(timeZone: string): boolean {
   }
 }
 
+/**
+ * Alberta has stayed on UTC-6 all year since its Official Time Act (18 June 2026); the
+ * clocks no longer go back on 1 November 2026. America/Edmonton only learns this in tzdata
+ * 2026c, which many browsers and servers do not ship yet, so Alberta is stored as the fixed
+ * UTC-6 zone instead. (Etc zones flip the sign: Etc/GMT+6 is UTC-6.)
+ */
+export const ALBERTA_TIME_ZONE = "Etc/GMT+6";
+
+/** Canada's zones by province and territory, west to east, offered first in settings. */
+export const CANADIAN_TIME_ZONES: { zone: string; label: string }[] = [
+  { zone: "America/Vancouver", label: "British Columbia (Pacific)" },
+  { zone: "America/Dawson_Creek", label: "Northeast British Columbia and Creston" },
+  { zone: "America/Whitehorse", label: "Yukon" },
+  { zone: ALBERTA_TIME_ZONE, label: "Alberta" },
+  { zone: "America/Edmonton", label: "Northwest Territories (Mountain)" },
+  { zone: "America/Cambridge_Bay", label: "Western Nunavut" },
+  { zone: "America/Regina", label: "Saskatchewan" },
+  { zone: "America/Winnipeg", label: "Manitoba and northwestern Ontario (Central)" },
+  { zone: "America/Rankin_Inlet", label: "Central Nunavut" },
+  { zone: "America/Atikokan", label: "Atikokan and Southampton Island" },
+  { zone: "America/Toronto", label: "Ontario and Quebec (Eastern)" },
+  { zone: "America/Iqaluit", label: "Eastern Nunavut" },
+  { zone: "America/Halifax", label: "Nova Scotia, New Brunswick, PEI (Atlantic)" },
+  { zone: "America/Goose_Bay", label: "Labrador" },
+  { zone: "America/Blanc-Sablon", label: "Blanc-Sablon, Quebec" },
+  { zone: "America/St_Johns", label: "Newfoundland" },
+];
+
+/** How a zone is named in the app: "Alberta" for Canada's, "America/New York" otherwise. */
+export function timeZoneLabel(zone: string): string {
+  return (
+    CANADIAN_TIME_ZONES.find((option) => option.zone === zone)?.label ??
+    zone.replace(/_/g, " ")
+  );
+}
+
 /** The zone this device is set to; used as the house default when it is created. */
 export function deviceTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";

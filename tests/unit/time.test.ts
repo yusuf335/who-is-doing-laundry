@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  ALBERTA_TIME_ZONE,
+  CANADIAN_TIME_ZONES,
   addDays,
   atTime,
   formatDayAndTime,
@@ -12,6 +14,7 @@ import {
   slotTimeOptions,
   snapToSlot,
   SLOT_MINUTES,
+  timeZoneLabel,
   weekdayOf,
 } from "@/lib/time";
 
@@ -188,5 +191,27 @@ describe("isValidTimeZone", () => {
     expect(isValidTimeZone("UTC")).toBe(true);
     expect(isValidTimeZone("Mars/Olympus")).toBe(false);
     expect(isValidTimeZone("")).toBe(false);
+  });
+});
+
+describe("Canadian time zones", () => {
+  it("are all zones the runtime knows", () => {
+    for (const { zone } of CANADIAN_TIME_ZONES) expect(isValidTimeZone(zone)).toBe(true);
+  });
+
+  it("keeps Alberta on UTC-6 through the winter", () => {
+    const hour = (date: Date) =>
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: ALBERTA_TIME_ZONE,
+        hour: "numeric",
+        hourCycle: "h23",
+      }).format(date);
+    expect(hour(new Date("2026-07-01T18:00:00Z"))).toBe("12");
+    expect(hour(new Date("2026-12-01T18:00:00Z"))).toBe("12");
+  });
+
+  it("names Canada's zones by province and others by city", () => {
+    expect(timeZoneLabel(ALBERTA_TIME_ZONE)).toBe("Alberta");
+    expect(timeZoneLabel("America/New_York")).toBe("America/New York");
   });
 });

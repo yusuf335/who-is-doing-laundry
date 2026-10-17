@@ -64,7 +64,10 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -75,7 +78,11 @@ import { useNow } from "@/hooks/use-now";
 import { errorMessage } from "@/lib/errors";
 import { colorWarning, machineColors, suggestColor } from "@/lib/machine-color";
 import { scheduleModeOf } from "@/lib/schedule";
-import { deviceTimeZone } from "@/lib/time";
+import {
+  CANADIAN_TIME_ZONES,
+  deviceTimeZone,
+  timeZoneLabel,
+} from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { runAction } from "@/lib/run-action";
 import {
@@ -615,6 +622,17 @@ function zoneNow(zone: string, now: Date): string {
  * printed in emails and notifications, which the server would otherwise give in UTC.
  * Daylight saving follows automatically from the zone.
  */
+function ZoneItem({ zone, label, now }: { zone: string; label: string; now: Date }) {
+  return (
+    <SelectItem value={zone}>
+      <span>{label}</span>
+      <span className="text-muted-foreground text-xs tabular-nums">
+        {zoneNow(zone, now)}
+      </span>
+    </SelectItem>
+  );
+}
+
 function TimeZoneCard({ house }: { house: House }) {
   const current = house.timeZone ?? "UTC";
   const device = deviceTimeZone();
@@ -631,7 +649,11 @@ function TimeZoneCard({ house }: { house: House }) {
         ? Intl.supportedValuesOf("timeZone")
         : [];
     // The current and the device's zone are always offered, even if the list lacks them.
-    return Array.from(new Set([current, device, "UTC", ...all]));
+    // Canada's zones have their own group above, so they are not repeated here.
+    const canadian = new Set(CANADIAN_TIME_ZONES.map((option) => option.zone));
+    return Array.from(new Set([current, device, "UTC", ...all])).filter(
+      (zone) => !canadian.has(zone),
+    );
   }, [current, device]);
 
   async function choose(zone: string) {
@@ -645,7 +667,7 @@ function TimeZoneCard({ house }: { house: House }) {
           timeZone: zone,
         }),
       );
-      toast.success(`Time zone set to ${zone.replace(/_/g, " ")}.`);
+      toast.success(`Time zone set to ${timeZoneLabel(zone)}.`);
     } catch (error) {
       toast.error(errorMessage(error, "Could not change the time zone."));
     } finally {
@@ -668,14 +690,19 @@ function TimeZoneCard({ house }: { house: House }) {
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="max-h-80">
-            {zones.map((zone) => (
-              <SelectItem key={zone} value={zone}>
-                <span>{zone.replace(/_/g, " ")}</span>
-                <span className="text-muted-foreground text-xs tabular-nums">
-                  {zoneNow(zone, now)}
-                </span>
-              </SelectItem>
-            ))}
+            <SelectGroup>
+              <SelectLabel>Canada</SelectLabel>
+              {CANADIAN_TIME_ZONES.map(({ zone, label }) => (
+                <ZoneItem key={zone} zone={zone} label={label} now={now} />
+              ))}
+            </SelectGroup>
+            <SelectSeparator />
+            <SelectGroup>
+              <SelectLabel>Everywhere</SelectLabel>
+              {zones.map((zone) => (
+                <ZoneItem key={zone} zone={zone} label={timeZoneLabel(zone)} now={now} />
+              ))}
+            </SelectGroup>
           </SelectContent>
         </Select>
         {/* Browser-only: Node and the browser format "4:49 PM" with different spaces,
@@ -693,7 +720,7 @@ function TimeZoneCard({ house }: { house: House }) {
             disabled={busy}
             onClick={() => choose(device)}
           >
-            Use this device&apos;s zone ({device.replace(/_/g, " ")})
+            Use this device&apos;s zone ({timeZoneLabel(device)})
           </Button>
         )}
       </CardContent>
